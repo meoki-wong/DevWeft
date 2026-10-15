@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "featureKey": "example-page",
+  "side": "example",
+  "description": "Example contract: success, empty, and error responses for a sample list page.",
+  "scenarios": [
+    "empty",
+    "boundary",
+    "no-permission"
+  ],
+  "ui": {
+    "path": "/example",
+    "dataTests": [
+      "list-item",
+      "empty-state",
+      "error-banner"
+    ]
+  },
+  "routes": [
+    {
+      "id": "list-ok",
+      "match": {
+        "method": "GET",
+        "pathIncludes": "/api/example/list"
+      },
+      "request": {
+        "requiredParams": [
+          "page",
+          "pageSize"
+        ]
+      },
+      "response": {
+        "status": 200,
+        "bodyShape": {
+          "code": "number",
+          "data.list": "array",
+          "data.total": "number"
+        },
+        "sample": {
+          "code": 0,
+          "data": {
+            "list": [
+              {
+                "id": "1",
+                "name": "样例"
+              }
+            ],
+            "total": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "list-empty",
+      "match": {
+        "method": "GET",
+        "pathIncludes": "/api/example/list"
+      },
+      "mock": {
+        "status": 200,
+        "body": {
+          "code": 0,
+          "data": {
+            "list": [],
+            "total": 0
+          }
+        }
+      },
+      "expectUi": {
+        "emptyVisible": true
+      }
+    },
+    {
+      "id": "list-500",
+      "match": {
+        "method": "GET",
+        "pathIncludes": "/api/example/list"
+      },
+      "mock": {
+        "status": 500,
+        "body": {
+          "code": 500,
+          "message": "server error"
+        }
+      },
+      "expectUi": {
+        "errorVisible": true
+      }
+    }
+  ]
+}

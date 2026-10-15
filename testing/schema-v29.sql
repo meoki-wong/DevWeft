@@ -1,0 +1,15 @@
+-- testing schema v29: verify_report 证据时效与防借用
+--
+-- 目标：本地验证证据绑定 workspace/revision/输出哈希/时间窗，
+--      不再「任意历史 pass 即可」，禁止跨任务/跨仓借用。
+--
+-- ALTER ADD COLUMN 由 migrate.js 按列存在性门控（对齐 v18/v24/v27 模式）。
+-- 意图文件供 review；实际 apply 见 applyV29VerifyEvidenceFields。
+
+-- ALTER TABLE verify_reports ADD COLUMN workspace_head TEXT;
+-- ALTER TABLE verify_reports ADD COLUMN code_snapshot_sha TEXT;
+-- ALTER TABLE verify_reports ADD COLUMN output_sha256 TEXT;
+-- ALTER TABLE verify_reports ADD COLUMN command_exit_code INTEGER;
+-- ALTER TABLE verify_reports ADD COLUMN started_at TEXT;
+-- ALTER TABLE verify_reports ADD COLUMN finished_at TEXT;
+-- ALTER TABLE verify_reports ADD COLUMN source TEXT DEFAULT 'manual';

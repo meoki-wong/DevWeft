@@ -1,0 +1,39 @@
+{
+  "name": "devweft",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "description": "A multi-tenant MCP platform for team knowledge, workflow orchestration, and isolated test execution.",
+  "scripts": {
+    "start": "node server.js",
+    "db:init": "node db.js",
+    "test:harness": "node test-harness.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "secret-broker": "node secret-broker/server.mjs",
+    "secret-broker:put": "node secret-broker/put-secret.mjs",
+    "test-submit": "node scripts/test-submit.mjs",
+    "bootstrap": "node scripts/bootstrap-test-platform.mjs",
+    "backup": "node scripts/backup-db.mjs",
+    "policies:build": "node scripts/build-policies.mjs"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@open-policy-agent/opa-wasm": "^1.10.0",
+    "acorn": "^8.18.0",
+    "better-sqlite3": "^11.0.0",
+    "express": "^5.2.1",
+    "pg": "^8.23.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^1.6.0",
+    "happy-dom": "^14.12.3",
+    "vitest": "^1.6.0"
+  },
+  "optionalDependencies": {
+    "@embedded-postgres/windows-x64": "^18.4.0-beta.17"
+  }
+}

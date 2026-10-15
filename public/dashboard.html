@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent Workflow Platform · 团队工作台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23fc3f41'/%3E%3Cpath d='M16 6v20M7.3 11l17.4 10M7.3 21l17.4-10' stroke='%23fff' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="assets/dashboard.css?v=%BUILD%" />
+  <link rel="stylesheet" href="assets/cloud-testing/cloud-testing.css?v=%BUILD%" />
+</head>
+<body>
+  <div class="app">
+    <!-- ═══ 侧边导航 ═══ -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">
+          <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
+            <path d="M16 4v24M6.7 9.4l18.6 11.2M6.7 20.6L25.3 9.4" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <div class="brand-name">Agent Workflow Platform</div>
+          <div class="brand-sub">团队协作工作台</div>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav">
+        <a class="nav-item" href="#/overview" data-route="overview">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/></svg>
+          <span>总览</span>
+        </a>
+        <a class="nav-item" href="#/experiences" data-route="experiences">
+          <svg viewBox="0 0 24 24"><path d="M12 3a6.5 6.5 0 0 0-4.3 11.4c.7.6 1.1 1.4 1.2 2.3l.1.8h6l.1-.8c.1-.9.5-1.7 1.2-2.3A6.5 6.5 0 0 0 12 3z"/><path d="M9.5 21h5M10.5 17.5h3"/></svg>
+          <span>经验库</span>
+          <em class="nav-badge" id="navExpBadge" hidden></em>
+        </a>
+        <a class="nav-item" href="#/activity" data-route="activity">
+          <svg viewBox="0 0 24 24"><path d="M3 12h4l2.5-7 5 14 2.5-7h4"/></svg>
+          <span>调用流</span>
+        </a>
+        <a class="nav-item" href="#/tasks" data-route="tasks">
+          <svg viewBox="0 0 24 24"><path d="M4 5.5l1.7 1.7L8.6 4.4"/><path d="M4 12.5l1.7 1.7 2.9-2.8"/><path d="M4 19.5l1.7 1.7 2.9-2.8"/><path d="M11.5 6.5H20M11.5 13.5H20M11.5 20.5H20"/></svg>
+          <span>任务</span>
+        </a>
+        <a class="nav-item" href="#/projects" data-route="projects">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.6"/><rect x="3" y="14" width="18" height="7" rx="1.6"/><path d="M7 7.5h.01M7 17.5h.01"/></svg>
+          <span>项目管理</span>
+        </a>
+        <a class="nav-item" href="#/specs" data-route="specs">
+          <svg viewBox="0 0 24 24"><path d="M9 3h6l1 3h4v14H4V6h4l1-3z"/><path d="M9 13h6M9 17h4"/></svg>
+          <span>测试资产</span>
+        </a>
+        <a class="nav-item" href="#/docs" data-route="docs">
+          <svg viewBox="0 0 24 24"><path d="M2.5 4.5h6a3.5 3.5 0 0 1 3.5 3.5v11.5a3 3 0 0 0-3-3h-6.5z"/><path d="M21.5 4.5h-6a3.5 3.5 0 0 0-3.5 3.5v11.5a3 3 0 0 1 3-3h6.5z"/></svg>
+          <span>知识库</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="server-line"><span class="dot" id="healthDot"></span><span id="healthText">连接中…</span></div>
+        <div class="server-sub" id="healthSub">agent-workflow-platform</div>
+        <div class="server-sub" style="opacity:.55">build %BUILD%</div>
+      </div>
+    </aside>
+
+    <!-- ═══ 主区域 ═══ -->
+    <div class="main">
+      <header class="topbar">
+        <div class="topbar-title">
+          <h1 id="viewTitle">总览</h1>
+          <p id="viewSub"></p>
+        </div>
+        <div class="topbar-actions">
+          <label class="repo-picker">
+            <span class="repo-label">项目</span>
+            <select id="repoSelect" title="切换项目（多租户 repo）"></select>
+          </label>
+          <button class="icon-btn" id="themeBtn" title="切换深 / 浅色主题">
+            <svg class="ico-moon" viewBox="0 0 24 24"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/></svg>
+            <svg class="ico-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5 5l1.7 1.7M17.3 17.3 19 19M19 5l-1.7 1.7M6.7 17.3 5 19"/></svg>
+          </button>
+          <button class="icon-btn" id="refreshBtn" title="刷新当前视图">
+            <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 3.5V8h-4.5"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="content" id="view"><!-- 视图由 dashboard.js 渲染 --></main>
+    </div>
+  </div>
+
+  <!-- 用户名弹窗（评审操作前署名） -->
+  <div class="modal-mask" id="nameModal" hidden>
+    <div class="modal">
+      <h3>先登记一下你的名字</h3>
+      <p>评审经验需要署名，方便团队追溯谁通过了哪条经验。</p>
+      <input id="nameInput" placeholder="如 zhangsan（与 MCP 连接 username 一致）" maxlength="40" autocomplete="off" />
+      <div class="modal-actions">
+        <button class="btn ghost" id="nameCancel">取消</button>
+        <button class="btn primary" id="nameSave">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <script src="assets/dashboard.js?v=%BUILD%"></script>
+</body>
+</html>

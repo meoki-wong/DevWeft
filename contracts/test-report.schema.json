@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workflow.invalid/contracts/test-report.schema.json",
+  "title": "GuestSidecarResult",
+  "description": "result.json sidecar. SHA-256 of canonical JSON is resultSha256. Host copies only artifact.zip, manifest.json, result.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "attempt",
+    "leaseEpoch",
+    "bindingId",
+    "status",
+    "checks"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "runId": { "$ref": "#/$defs/uuid" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "leaseEpoch": { "type": "integer", "minimum": 1 },
+    "bindingId": { "$ref": "#/$defs/sha256" },
+    "status": {
+      "type": "string",
+      "enum": ["passed", "failed", "error", "canceled", "timed_out", "lost"]
+    },
+    "checks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/check" }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["caseKey", "status", "durationMs"],
+      "properties": {
+        "caseKey": { "type": "string", "minLength": 1 },
+        "status": {
+          "type": "string",
+          "enum": ["passed", "failed", "error"]
+        },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "detail": { "type": "string" },
+        "title": { "type": "string", "description": "中文用例标题" },
+        "expected": { "type": "string", "description": "期望结果（中文）" },
+        "actual": { "type": "string", "description": "实际结果（中文）" },
+        "actionCount": { "type": "integer", "minimum": 0 },
+        "steps": {
+          "type": "array",
+          "description": "E2E 分步操作流水（中文 name + expected/actual）",
+          "items": { "$ref": "#/$defs/step" }
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "status"],
+      "properties": {
+        "name": { "type": "string", "description": "中文操作描述" },
+        "action": { "type": "string" },
+        "target": { "type": ["string", "null"] },
+        "expected": { "type": ["string", "null"] },
+        "actual": { "type": ["string", "null"] },
+        "status": { "type": "string", "enum": ["ok", "failed", "skip"] },
+        "durationMs": { "type": ["integer", "null"] },
+        "detail": { "type": ["string", "null"] },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "screenshot": { "type": "string" },
+            "network": { "type": "array" },
+            "console": { "type": "array" }
+          }
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "artifactSidecarManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "runId",
+        "attempt",
+        "leaseEpoch",
+        "bindingId",
+        "sourceSha256",
+        "suiteLockSha256",
+        "imageId",
+        "imageManifestSha256",
+        "resultSha256",
+        "archiveSha256",
+        "files",
+        "totalSize",
+        "artifactTruncated"
+      ],
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "runId": { "$ref": "#/$defs/uuid" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "leaseEpoch": { "type": "integer", "minimum": 1 },
+        "bindingId": { "$ref": "#/$defs/sha256" },
+        "sourceSha256": { "$ref": "#/$defs/sha256" },
+        "suiteLockSha256": { "$ref": "#/$defs/sha256" },
+        "imageId": { "type": "string", "minLength": 1 },
+        "imageManifestSha256": { "$ref": "#/$defs/sha256" },
+        "resultSha256": { "$ref": "#/$defs/sha256" },
+        "archiveSha256": { "$ref": "#/$defs/sha256" },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256", "size"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Normalized relative path. Absolute paths, backslash, and .. segments are rejected.",
+                "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[A-Za-z0-9._][A-Za-z0-9._/-]*$"
+              },
+              "sha256": { "$ref": "#/$defs/sha256" },
+              "size": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "totalSize": { "type": "integer", "minimum": 0 },
+        "artifactTruncated": { "type": "boolean" }
+      }
+    }
+  }
+}

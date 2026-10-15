@@ -1,0 +1,1312 @@
+openapi: 3.1.0
+info:
+  title: AWP Test Platform
+  version: 1.0.0
+  description: |
+    Control plane `/v1` plus independent secret broker `/v1`.
+    Envelope is always `{ data, error, meta }`. Success requires `error=null`.
+    Unknown request fields must be rejected with `UNKNOWN_FIELD`.
+    Source: docs/TEST-PLATFORM-ENTERPRISE.md §14–§17.
+servers:
+  - url: https://control-plane.local/v1
+    description: Harness control plane
+  - url: https://secret-broker.local/v1
+    description: Independent secret broker (separate process and SQLite)
+tags:
+  - name: git
+  - name: blobs
+  - name: suites
+  - name: submissions
+  - name: gates
+  - name: runner
+  - name: broker
+security:
+  - personalToken: []
+paths:
+  /git-contexts:resolve:
+    post:
+      tags: [git]
+      operationId: resolveGitContext
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GitContextResolveRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/GitContextResolved'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /blobs:prepare:
+    post:
+      tags: [blobs]
+      operationId: prepareBlob
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [kind, sha256, size]
+              properties:
+                kind:
+                  type: string
+                  enum: [git-bundle, suite-blob, candidate-blob]
+                sha256:
+                  $ref: '#/components/schemas/Sha256'
+                size:
+                  type: integer
+                  minimum: 1
+      responses:
+        '200':
+          $ref: '#/components/responses/BlobPrepare'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /blobs/uploads/{uploadId}:
+    put:
+      tags: [blobs]
+      operationId: uploadBlob
+      parameters:
+        - name: uploadId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: Content-Length
+          in: header
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          $ref: '#/components/responses/OkEmptyData'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /suite-plans:resolve:
+    post:
+      tags: [suites]
+      operationId: resolveSuitePlan
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SuitePlanResolveRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/SuitePlanResolved'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /test-submissions:
+    post:
+      tags: [submissions]
+      operationId: createTestSubmission
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSubmissionRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/SubmissionCreated'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /test-submissions/{submissionId}:
+    get:
+      tags: [submissions]
+      operationId: getTestSubmission
+      parameters:
+        - name: submissionId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          $ref: '#/components/responses/SubmissionCreated'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /test-submissions/{submissionId}:cancel:
+    post:
+      tags: [submissions]
+      operationId: cancelTestSubmission
+      parameters:
+        - name: submissionId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedRevision, reason]
+              properties:
+                expectedRevision:
+                  type: integer
+                  minimum: 1
+                reason:
+                  type: string
+                  minLength: 1
+      responses:
+        '200':
+          $ref: '#/components/responses/OkEmptyData'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /test-bindings/{bindingId}:
+    get:
+      tags: [submissions]
+      operationId: getTestBinding
+      parameters:
+        - name: bindingId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Sha256'
+      responses:
+        '200':
+          $ref: '#/components/responses/BindingGet'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /run-groups/{runGroupId}:
+    get:
+      tags: [submissions]
+      operationId: getRunGroup
+      parameters:
+        - name: runGroupId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          $ref: '#/components/responses/RunGroupGet'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /test-runs/{runId}:
+    get:
+      tags: [submissions]
+      operationId: getTestRun
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          $ref: '#/components/responses/TestRunGet'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /test-runs/{runId}/report:
+    get:
+      tags: [submissions]
+      operationId: getTestRunReport
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          $ref: '#/components/responses/OkEmptyData'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /test-runs/{runId}/artifact:
+    get:
+      tags: [submissions]
+      operationId: getTestRunArtifact
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          description: ACL-checked 5-minute one-time download URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /gates:evaluate:
+    post:
+      tags: [gates]
+      operationId: evaluateGate
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GateEvaluateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/GateEvaluate'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /runner/leases:acquire:
+    post:
+      tags: [runner]
+      operationId: acquireLease
+      security:
+        - workerMtls: []
+      parameters:
+        - $ref: '#/components/parameters/WorkerId'
+        - $ref: '#/components/parameters/WorkerVersion'
+      responses:
+        '200':
+          $ref: '#/components/responses/LeaseReservation'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /runner/leases/{leaseId}:accept:
+    post:
+      tags: [runner]
+      operationId: acceptLease
+      security:
+        - workerMtls: []
+      parameters:
+        - name: leaseId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - $ref: '#/components/parameters/WorkerId'
+        - $ref: '#/components/parameters/WorkerVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeaseAcceptRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/LeaseAccept'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /runner/leases/{leaseId}:heartbeat:
+    post:
+      tags: [runner]
+      operationId: heartbeatLease
+      security:
+        - workerMtls: []
+      parameters:
+        - name: leaseId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - $ref: '#/components/parameters/WorkerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkerLeaseOp'
+      responses:
+        '200':
+          $ref: '#/components/responses/OkEmptyData'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /runner/leases/{leaseId}/artifact:prepare:
+    post:
+      tags: [runner]
+      operationId: prepareLeaseArtifact
+      security:
+        - workerMtls: []
+      parameters:
+        - name: leaseId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - $ref: '#/components/parameters/WorkerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeaseArtifactPrepareRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/BlobPrepare'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /runner/artifact-uploads/{uploadId}:
+    put:
+      tags: [runner]
+      operationId: uploadLeaseArtifact
+      security:
+        - workerMtls: []
+      parameters:
+        - name: uploadId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - $ref: '#/components/parameters/WorkerId'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          $ref: '#/components/responses/OkEmptyData'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /runner/leases/{leaseId}:complete:
+    post:
+      tags: [runner]
+      operationId: completeLease
+      security:
+        - workerMtls: []
+      parameters:
+        - name: leaseId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - $ref: '#/components/parameters/WorkerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeaseCompleteRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/OkEmptyData'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /runner/leases/{leaseId}:reject:
+    post:
+      tags: [runner]
+      operationId: rejectLease
+      security:
+        - workerMtls: []
+      parameters:
+        - name: leaseId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - $ref: '#/components/parameters/WorkerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkerLeaseOp'
+      responses:
+        '200':
+          $ref: '#/components/responses/OkEmptyData'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /grants:
+    post:
+      tags: [broker]
+      operationId: createSecretGrant
+      security:
+        - brokerControlPlaneMtls: []
+      description: Secret broker only. No plaintext in request or control-plane DB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGrantRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/OkEmptyData'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /grants/{secretGrantId}:fetch:
+    post:
+      tags: [broker]
+      operationId: fetchSecretGrant
+      security:
+        - brokerWorkerMtls: []
+      description: Secret broker only. Returns plaintext once.
+      parameters:
+        - name: secretGrantId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [workerId, leaseId, capability]
+              properties:
+                workerId:
+                  $ref: '#/components/schemas/Uuid'
+                leaseId:
+                  $ref: '#/components/schemas/Uuid'
+                capability:
+                  type: string
+                  minLength: 1
+      responses:
+        '200':
+          $ref: '#/components/responses/GrantFetched'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /grants/{secretGrantId}:revoke:
+    post:
+      tags: [broker]
+      operationId: revokeSecretGrant
+      security:
+        - brokerWorkerMtls: []
+      parameters:
+        - name: secretGrantId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [workerId, leaseId]
+              properties:
+                workerId:
+                  $ref: '#/components/schemas/Uuid'
+                leaseId:
+                  $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          $ref: '#/components/responses/OkEmptyData'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /test-specs:
+    post:
+      summary: 提交测试考卷（feature-key 模式，版本化存储）
+      tags: [test-specs]
+  /test-specs/{featureKey}:
+    get:
+      summary: 按 featureKey 查询考卷详情与版本历史
+      tags: [test-specs]
+  /test-specs-active:
+    get:
+      summary: 查询仓内全部 active 考卷
+      tags: [test-specs]
+  /test-runs/{runId}/artifact/content:
+    get:
+      summary: 一次性下载 run 产物（token 换取，consumed 后失效）
+      tags: [test-runs]
+
+components:
+  securitySchemes:
+    personalToken:
+      type: http
+      scheme: bearer
+      description: 256-bit personal token. Never in URL query.
+    workerMtls:
+      type: mutualTLS
+      description: Registered worker machine certificate
+    brokerControlPlaneMtls:
+      type: mutualTLS
+    brokerWorkerMtls:
+      type: mutualTLS
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      schema:
+        type: string
+    ClientVersion:
+      name: X-Client-Version
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    WorkerId:
+      name: X-Worker-Id
+      in: header
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    WorkerVersion:
+      name: X-Worker-Version
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  schemas:
+    Uuid:
+      type: string
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    Sha256:
+      type: string
+      pattern: '^[a-f0-9]{64}$'
+    GitOid:
+      type: string
+      pattern: '^[a-f0-9]{40}([a-f0-9]{24})?$'
+    ErrorCode:
+      type: string
+      enum:
+        - UNKNOWN_FIELD
+        - INVALID_SCHEMA
+        - UNRESOLVED_REMOTE
+        - CROSS_REPO_REFERENCE
+        - BRANCH_UNVERIFIED
+        - BRANCH_GENERATION_CHANGED
+        - TASK_REVISION_CONFLICT
+        - SNAPSHOT_HASH_MISMATCH
+        - WORKSPACE_CHANGED_DURING_SNAPSHOT
+        - BUNDLE_TOO_LARGE
+        - SECRET_FILES_DETECTED
+        - SUITE_CASE_CONFLICT
+        - PROTECTED_CASE_VIOLATION
+        - SUITE_CAPABILITY_DENIED
+        - SUITE_REVOKED
+        - CANDIDATE_NOT_APPROVED
+        - CANDIDATE_APPROVAL_STALE
+        - AUTHOR_CANNOT_REVIEW
+        - BINDING_STALE
+        - TASK_BINDING_SUPERSEDED
+        - TARGET_BASE_MOVED
+        - POLICY_CHANGED
+        - PROFILE_CHANGED
+        - IMAGE_CHANGED
+        - STALE_LEASE
+        - LEASE_EXPIRED
+        - RUNSPEC_SIGNATURE_INVALID
+        - WORKSPACE_ATTESTATION_REQUIRED
+        - ARTIFACT_HASH_MISMATCH
+        - ARTIFACT_TOO_LARGE
+        - IDEMPOTENCY_KEY_REUSED
+        - PRECONDITION_FAILED
+        - CLIENT_TOO_OLD
+        - NODE_VERSION_UNSUPPORTED
+        - PRIVATE_REGISTRY_UNAVAILABLE
+        - TRANSLATION_FIXTURE_INVALID
+        - MOCK_CONTRACT_MISSING
+        - GRANT_NOT_FOUND
+        - GRANT_ALREADY_FETCHED
+        - GRANT_REVOKED
+        - GRANT_EXPIRED
+        - GRANT_IDENTITY_MISMATCH
+        - SECRET_REF_UNKNOWN
+    ErrorObject:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        validationErrors:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [path]
+            properties:
+              path:
+                type: string
+              reason:
+                type: string
+    Meta:
+      type: object
+      additionalProperties: false
+      properties:
+        requestId:
+          $ref: '#/components/schemas/Uuid'
+    Envelope:
+      type: object
+      additionalProperties: false
+      required: [data, error, meta]
+      properties:
+        data: {}
+        error:
+          anyOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ErrorObject'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    GitContextResolveRequest:
+      type: object
+      additionalProperties: false
+      required: [remotes, sourceRef, headCommitOid, objectFormat]
+      properties:
+        remotes:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, url]
+            properties:
+              name:
+                type: string
+                minLength: 1
+              url:
+                type: string
+                minLength: 1
+        sourceRef:
+          type: string
+          pattern: '^refs/'
+        headCommitOid:
+          $ref: '#/components/schemas/GitOid'
+        objectFormat:
+          type: string
+          enum: [sha1, sha256]
+    SuitePlanResolveRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - repoId
+        - taskInstanceId
+        - expectedTaskRevision
+        - branchIncarnationId
+        - headCommitOid
+        - snapshotTreeOid
+        - changedPaths
+        - changedPathsSha256
+        - targetRemoteId
+        - targetRef
+        - targetCommitOid
+        - candidateRevisionIds
+        - requestedProfileName
+        - requestedSides
+      properties:
+        repoId:
+          $ref: '#/components/schemas/Uuid'
+        taskInstanceId:
+          $ref: '#/components/schemas/Uuid'
+        expectedTaskRevision:
+          type: integer
+          minimum: 1
+        branchIncarnationId:
+          anyOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        headCommitOid:
+          $ref: '#/components/schemas/GitOid'
+        snapshotTreeOid:
+          $ref: '#/components/schemas/GitOid'
+        changedPaths:
+          type: array
+          items:
+            type: string
+        changedPathsSha256:
+          $ref: '#/components/schemas/Sha256'
+        targetRemoteId:
+          $ref: '#/components/schemas/Uuid'
+        targetRef:
+          type: string
+          pattern: '^refs/'
+        targetCommitOid:
+          $ref: '#/components/schemas/GitOid'
+        candidateRevisionIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/Uuid'
+        requestedProfileName:
+          type: string
+          minLength: 1
+        requestedSides:
+          type: string
+          minLength: 1
+          description: Repository-configured lane name, both, or auto.
+    CreateSubmissionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - clientRequestId
+        - repoId
+        - sourceRemoteId
+        - branchIncarnationId
+        - taskInstanceId
+        - expectedTaskRevision
+        - git
+        - bundle
+        - suiteRequest
+        - executionRequest
+      properties:
+        clientRequestId:
+          $ref: '#/components/schemas/Uuid'
+        repoId:
+          $ref: '#/components/schemas/Uuid'
+        sourceRemoteId:
+          $ref: '#/components/schemas/Uuid'
+        branchIncarnationId:
+          anyOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        taskInstanceId:
+          $ref: '#/components/schemas/Uuid'
+        expectedTaskRevision:
+          type: integer
+          minimum: 1
+        git:
+          type: object
+          additionalProperties: false
+          required:
+            - objectFormat
+            - sourceRef
+            - headCommitOid
+            - snapshotCommitOid
+            - snapshotTreeOid
+            - changedPathsSha256
+            - targetRemoteId
+            - targetRef
+            - targetCommitOid
+            - mr
+          properties:
+            objectFormat:
+              type: string
+              enum: [sha1, sha256]
+            sourceRef:
+              type: string
+              pattern: '^refs/'
+            headCommitOid:
+              $ref: '#/components/schemas/GitOid'
+            snapshotCommitOid:
+              $ref: '#/components/schemas/GitOid'
+            snapshotTreeOid:
+              $ref: '#/components/schemas/GitOid'
+            changedPathsSha256:
+              $ref: '#/components/schemas/Sha256'
+            targetRemoteId:
+              $ref: '#/components/schemas/Uuid'
+            targetRef:
+              type: string
+              pattern: '^refs/'
+            targetCommitOid:
+              $ref: '#/components/schemas/GitOid'
+            mr:
+              anyOf:
+                - type: 'null'
+                - type: object
+        bundle:
+          type: object
+          additionalProperties: false
+          required: [sha256, size]
+          properties:
+            sha256:
+              $ref: '#/components/schemas/Sha256'
+            size:
+              type: integer
+              minimum: 1
+        suiteRequest:
+          type: object
+          additionalProperties: false
+          required: [mode, candidateRevisionIds, candidateApprovalIds]
+          properties:
+            mode:
+              type: string
+              enum: [auto]
+            candidateRevisionIds:
+              type: array
+              items:
+                $ref: '#/components/schemas/Uuid'
+            candidateApprovalIds:
+              type: array
+              items:
+                $ref: '#/components/schemas/Uuid'
+        executionRequest:
+          type: object
+          additionalProperties: false
+          required: [profile, side]
+          properties:
+            profile:
+              type: string
+              minLength: 1
+            side:
+              type: string
+              minLength: 1
+              description: Repository-configured lane name, both, or auto.
+    GateEvaluateRequest:
+      type: object
+      additionalProperties: false
+      required: [repoId, taskInstanceId, bindingId, purpose, transition, expectedTaskRevision]
+      properties:
+        repoId:
+          $ref: '#/components/schemas/Uuid'
+        taskInstanceId:
+          $ref: '#/components/schemas/Uuid'
+        bindingId:
+          $ref: '#/components/schemas/Sha256'
+        purpose:
+          type: string
+          enum: [harness-transition]
+        transition:
+          type: string
+          enum: [EXECUTE_TO_VERIFY, EXECUTE_TO_DONE]
+        expectedTaskRevision:
+          type: integer
+          minimum: 1
+    WorkspaceAttestationSubmit:
+      type: object
+      additionalProperties: false
+      required:
+        - challengeId
+        - deviceId
+        - nonce
+        - repoId
+        - taskInstanceId
+        - bindingId
+        - headCommitOid
+        - snapshotTreeOid
+        - deviceSignature
+      properties:
+        challengeId:
+          $ref: '#/components/schemas/Uuid'
+        deviceId:
+          $ref: '#/components/schemas/Uuid'
+        nonce:
+          type: string
+          minLength: 1
+        repoId:
+          $ref: '#/components/schemas/Uuid'
+        taskInstanceId:
+          $ref: '#/components/schemas/Uuid'
+        bindingId:
+          $ref: '#/components/schemas/Sha256'
+        headCommitOid:
+          $ref: '#/components/schemas/GitOid'
+        snapshotTreeOid:
+          $ref: '#/components/schemas/GitOid'
+        deviceSignature:
+          type: string
+          minLength: 1
+    CreateCandidateRequest:
+      type: object
+      additionalProperties: false
+      required: [repoId, taskInstanceId, expectedTaskRevision, baseBindingId, manifest]
+      properties:
+        repoId:
+          $ref: '#/components/schemas/Uuid'
+        taskInstanceId:
+          $ref: '#/components/schemas/Uuid'
+        expectedTaskRevision:
+          type: integer
+          minimum: 1
+        baseBindingId:
+          $ref: '#/components/schemas/Sha256'
+        manifest:
+          type: object
+          additionalProperties: false
+          required: [schemaVersion, title, requiredCapabilities, files]
+          properties:
+            schemaVersion:
+              type: integer
+              const: 1
+            title:
+              type: string
+              minLength: 1
+            requiredCapabilities:
+              type: array
+              items:
+                type: string
+            files:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [path, sha256, content]
+                properties:
+                  path:
+                    type: string
+                    minLength: 1
+                  sha256:
+                    $ref: '#/components/schemas/Sha256'
+                  content:
+                    type: string
+    ReviewCandidateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - expectedRevision
+        - decision
+        - candidateLockSha256
+        - prospectiveBindingId
+        - reason
+        - expiresAt
+      properties:
+        expectedRevision:
+          type: integer
+          minimum: 1
+        decision:
+          type: string
+          enum: [approve_for_task]
+        candidateLockSha256:
+          $ref: '#/components/schemas/Sha256'
+        prospectiveBindingId:
+          $ref: '#/components/schemas/Sha256'
+        reason:
+          type: string
+          minLength: 1
+        expiresAt:
+          type: string
+          format: date-time
+    RequestPromotion:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, targetLayer, targetOverlayId, representativeBindingIds, reason]
+      properties:
+        expectedRevision:
+          type: integer
+          minimum: 1
+        targetLayer:
+          type: string
+          enum: [branch, repo, stable]
+        targetOverlayId:
+          $ref: '#/components/schemas/Uuid'
+        representativeBindingIds:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Sha256'
+        reason:
+          type: string
+          minLength: 1
+    ApprovePromotion:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, decision, reviewedManifestSha256, replays, mergeRequest, reason]
+      properties:
+        expectedRevision:
+          type: integer
+          minimum: 1
+        decision:
+          type: string
+          enum: [approve]
+        reviewedManifestSha256:
+          $ref: '#/components/schemas/Sha256'
+        replays:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [bindingId, runId, resultSha256, status]
+            properties:
+              bindingId:
+                $ref: '#/components/schemas/Sha256'
+              runId:
+                $ref: '#/components/schemas/Uuid'
+              resultSha256:
+                $ref: '#/components/schemas/Sha256'
+              status:
+                type: string
+                enum: [passed]
+        mergeRequest:
+          type: object
+          additionalProperties: false
+          required: [provider, projectId, iid, mergeCommitOid]
+          properties:
+            provider:
+              type: string
+              enum: [gitlab]
+            projectId:
+              type: string
+            iid:
+              type: integer
+            mergeCommitOid:
+              $ref: '#/components/schemas/GitOid'
+        reason:
+          type: string
+          minLength: 1
+    LeaseAcceptRequest:
+      type: object
+      additionalProperties: false
+      required: [runId, workerId, attempt, leaseEpoch, leaseToken, guestPublicKey, guestKeySha256]
+      properties:
+        runId:
+          $ref: '#/components/schemas/Uuid'
+        workerId:
+          $ref: '#/components/schemas/Uuid'
+        attempt:
+          type: integer
+          minimum: 1
+        leaseEpoch:
+          type: integer
+          minimum: 1
+        leaseToken:
+          type: string
+          minLength: 16
+        guestPublicKey:
+          type: string
+          minLength: 32
+        guestKeySha256:
+          $ref: '#/components/schemas/Sha256'
+    WorkerLeaseOp:
+      type: object
+      additionalProperties: false
+      required: [runId, workerId, attempt, leaseEpoch, leaseToken]
+      properties:
+        runId:
+          $ref: '#/components/schemas/Uuid'
+        workerId:
+          $ref: '#/components/schemas/Uuid'
+        attempt:
+          type: integer
+          minimum: 1
+        leaseEpoch:
+          type: integer
+          minimum: 1
+        leaseToken:
+          type: string
+          minLength: 16
+        operationSeq:
+          type: integer
+          minimum: 0
+    LeaseCompleteRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - runId
+        - workerId
+        - attempt
+        - leaseEpoch
+        - leaseToken
+        - bindingId
+        - status
+        - resultSha256
+        - runnerImageId
+        - runnerImageManifestSha256
+        - checks
+        - artifactManifestSha256
+      properties:
+        runId:
+          $ref: '#/components/schemas/Uuid'
+        workerId:
+          $ref: '#/components/schemas/Uuid'
+        attempt:
+          type: integer
+          minimum: 1
+        leaseEpoch:
+          type: integer
+          minimum: 1
+        leaseToken:
+          type: string
+          minLength: 16
+        bindingId:
+          $ref: '#/components/schemas/Sha256'
+        status:
+          type: string
+          enum: [passed, failed, error, canceled, timed_out, lost]
+        resultSha256:
+          $ref: '#/components/schemas/Sha256'
+        runnerImageId:
+          type: string
+          minLength: 1
+        runnerImageManifestSha256:
+          $ref: '#/components/schemas/Sha256'
+        checks:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [caseKey, status, durationMs]
+            properties:
+              caseKey:
+                type: string
+              status:
+                type: string
+                enum: [passed, failed, error]
+              durationMs:
+                type: integer
+                minimum: 0
+        artifactManifestSha256:
+          $ref: '#/components/schemas/Sha256'
+    LeaseArtifactPrepareRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - runId
+        - workerId
+        - attempt
+        - leaseEpoch
+        - leaseToken
+        - artifactSha256
+        - artifactManifestSha256
+        - size
+        - artifactTruncated
+      properties:
+        runId:
+          $ref: '#/components/schemas/Uuid'
+        workerId:
+          $ref: '#/components/schemas/Uuid'
+        attempt:
+          type: integer
+          minimum: 1
+        leaseEpoch:
+          type: integer
+          minimum: 1
+        leaseToken:
+          type: string
+          minLength: 16
+        artifactSha256:
+          $ref: '#/components/schemas/Sha256'
+        artifactManifestSha256:
+          $ref: '#/components/schemas/Sha256'
+        size:
+          type: integer
+          minimum: 1
+          maximum: 524288000
+        artifactTruncated:
+          type: integer
+          enum: [0, 1]
+    CreateGrantRequest:
+      type: object
+      additionalProperties: false
+      required: [secretGrantId, secretRef, workerId, leaseId, capability, expiresAt]
+      properties:
+        secretGrantId:
+          $ref: '#/components/schemas/Uuid'
+        secretRef:
+          type: string
+          minLength: 1
+        workerId:
+          $ref: '#/components/schemas/Uuid'
+        leaseId:
+          $ref: '#/components/schemas/Uuid'
+        capability:
+          type: string
+          minLength: 1
+        expiresAt:
+          type: string
+          format: date-time
+  responses:
+    ErrorEnvelope:
+      description: Error envelope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    OkEmptyData:
+      description: Success
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    GitContextResolved:
+      description: Resolved git context
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    BlobPrepare:
+      description: Blob upload reservation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    SuitePlanResolved:
+      description: Suite plan preview
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    SubmissionCreated:
+      description: Submission created
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    BindingGet:
+      description: Binding
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    RunGroupGet:
+      description: Run group
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    TestRunGet:
+      description: Test run
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    GateEvaluate:
+      description: Gate evaluation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    WorkspaceChallenge:
+      description: Workspace attestation challenge
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    CandidateReview:
+      description: Candidate review
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    LeaseReservation:
+      description: Lease reservation without RunSpec
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    LeaseAccept:
+      description: Signed RunSpec
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    GrantFetched:
+      description: One-time plaintext from broker
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'

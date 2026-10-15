@@ -1,0 +1,21 @@
+---
+description: 开始一个 AI 开发任务（自动 harness_start）
+---
+
+# /start-task — 开始 AI 开发任务
+
+收到本命令后，**第一步**调用 MCP：
+
+`harness_start(requirement="<从用户需求中提取的原文>", author="<当前 git user.name>")`
+
+拿到 taskId 后：
+
+1. `export AWP_AI_TASK_ID=<taskId>`（verify.sh 上报 L1/L2 靠它关联门禁）
+2. 调用 `harness_status(taskId)` 读取「必读 docs + 操作指引」并严格遵守
+3. 按 phase 推进：CLASSIFY（传 `size` S/M/L）→ LOCATE → PLAN → EXECUTE → VERIFY → DISTILL → DONE
+4. **EXECUTE 每改完一个文件立即报 L1**：`verify_report(level=L1, file=<文件>, pass, taskId=本任务)`
+5. **EXECUTE 末**：按需 `awp_test_run(taskId, author)` 下单云端门禁；`harness_advance` 时在 data 中带 `gateBindingId` 与 `expectedTaskRevision`
+6. 门禁失败后先 `distill_append` 总结，再修复重提
+7. 阶段推进只用 `harness_advance`；**禁止 `task_state` 直接改 phase**
+
+**未拿到 taskId 前，禁止 Edit/Write 任何业务代码。**

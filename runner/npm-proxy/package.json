@@ -1,0 +1,9 @@
+{
+  "name": "awp-npm-proxy",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Host-side HTTPS npm proxy for Guest VMs (npm-proxy-only-v1). Not used by the control plane.",
+  "dependencies": {
+    "verdaccio": "5.33.0"
+  }
+}

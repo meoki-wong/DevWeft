@@ -1,0 +1,49 @@
+node_modules/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.db-journal
+data/*.db.bak*
+nohup.out
+*.log
+
+# Local service configuration and credentials
+data/*.local.json
+
+.poc/
+secret-broker/dev-certs/
+data/secret-broker-material.json
+data/blobs/
+data/runner/
+data/signing-keys/
+data/bootstrap-admin.token
+data/bootstrap-admin.json
+data/deploy-status.json
+data/logs/
+data/.npm-ci.sha256
+data/deploy.env
+scripts/deploy.env
+scripts/golden.env
+runner/npm-proxy/node_modules/
+
+# Runtime assets and local backups are not source files
+data/test-specs/
+data/backups/
+data/artifact-url-hmac.key
+data/.testdb-tmp/
+# AI 会话临时工作区残留
+.pm2-tmp/
+coverage/
+tools/bin/opa.exe
+
+# PostgreSQL 运行时（不入库）
+data/pgdata/
+data/secpol.cfg
+data/secpol-export.cfg
+data/secedit.jfm
+data/secedit.sdb
+data/start-postgres.cmd
+
+# 链路网关方案 §17：备用机本机配置 + 网关路由快照（不提交）
+data/node.env
+data/gateway-routes.json

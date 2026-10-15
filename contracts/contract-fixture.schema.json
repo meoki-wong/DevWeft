@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workflow.invalid/schemas/contract-fixture.v1.json",
+  "title": "AWP Contract Fixture",
+  "type": "object",
+  "required": [
+    "featureKey",
+    "side",
+    "routes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1
+    },
+    "featureKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "side": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "empty",
+          "boundary",
+          "no-permission",
+          "error",
+          "loading"
+        ]
+      },
+      "default": []
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/route"
+      }
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "dataTests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "match": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE"
+          ]
+        },
+        "pathEquals": {
+          "type": "string"
+        },
+        "pathIncludes": {
+          "type": "string"
+        },
+        "pathRegex": {
+          "type": "string"
+        }
+      }
+    },
+    "bodyShape": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "string",
+          "number",
+          "boolean",
+          "array",
+          "object",
+          "null",
+          "any"
+        ]
+      }
+    },
+    "route": {
+      "type": "object",
+      "required": [
+        "id",
+        "match"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "match": {
+          "$ref": "#/$defs/match"
+        },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requiredParams": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "requiredBodyKeys": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "mock": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599
+            },
+            "body": {},
+            "delayMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 60000
+            }
+          }
+        },
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599
+            },
+            "bodyShape": {
+              "$ref": "#/$defs/bodyShape"
+            },
+            "sample": {}
+          }
+        },
+        "expectUi": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "errorVisible": {
+              "type": "boolean"
+            },
+            "emptyVisible": {
+              "type": "boolean"
+            },
+            "dataTest": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

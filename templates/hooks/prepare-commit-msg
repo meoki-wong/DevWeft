@@ -1,0 +1,77 @@
+#!/bin/bash
+# prepare-commit-msg — 为 AI 任务提交自动追加 [ai-fix]/[ai-origin] 标记
+#
+# 目的：消除「人忘记打标记」导致的版本沉淀 / 偏差分析遗漏。
+#       原 .githooks/post-commit 与 version-ai-distill 技能都靠提交 message 里的
+#       [ai-fix]/[ai-origin] 标记触发；本 hook 让标记由环境自动追加，人无需记忆。
+#
+# 触发条件：仅当存在 AWP_AI_TASK_ID 时追加。取值优先级：环境变量 > 项目根 .awp-ai-task 文件。
+#           该文件由 AI 会话 harness_start 后写入任务 ID（一行纯文本），或本 hook 在环境变量存在时自动落盘，或人工创建；
+#           写入后本次任务所有提交自动带标，人无需每次手动 export。文件已被 .gitignore 忽略，不入库。
+#          → 人在无该变量的 shell 中提交：不打标，正确识别为人工提交。
+#
+# 兼容性：产出 [ai-fix #<taskId>] / [ai-origin #<taskId>]，含 [ai-fix] 子串，
+#         向后兼容现有 post-commit 偏差分析 hook（grep \[ai-fix\]）与 version-ai-distill 技能。
+#
+# 幂等：message 已含 [ai- 标记则跳过，避免 --amend / rebase 重复追加。
+# 安全：任何异常路径均 exit 0，绝不阻塞提交。
+
+commit_msg_file="$1"
+src="${2:-}"
+
+# merge / squash 提交不打标（避免污染合并节点）
+case "$src" in
+  merge|squash) exit 0 ;;
+esac
+
+MSG="$(cat "$commit_msg_file" 2>/dev/null || true)"
+
+# 已有 AI 标记 → 跳过（幂等）
+if printf '%s' "$MSG" | grep -qE "\[ai-(fix|origin)"; then
+  exit 0
+fi
+
+TASK_ID="${AWP_AI_TASK_ID:-}"
+# 零人工介入：环境变量携带任务 ID 时，自动落盘到项目根 .awp-ai-task。
+# 之后即便该变量消失（如同伙的普通 shell、或会话结束后），后续提交仍读文件自动带标。
+if [ -n "$TASK_ID" ]; then
+  ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+  if [ ! -f "$ROOT/.awp-ai-task" ]; then
+    printf '%s\n' "$TASK_ID" > "$ROOT/.awp-ai-task" 2>/dev/null || true
+  fi
+fi
+# 环境变量未设时，fallback 读项目根 .awp-ai-task 文件（开任务时写入任务 ID，避免每次手动 export）
+if [ -z "$TASK_ID" ]; then
+  ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+  if [ -f "$ROOT/.awp-ai-task" ]; then
+    TASK_ID="$(grep -vE '^[[:space:]]*#' "$ROOT/.awp-ai-task" 2>/dev/null | head -1 | tr -d '[:space:]')"
+  fi
+fi
+[ -z "$TASK_ID" ] && exit 0   # 非 AI 会话，不打标
+
+# 判定本次提交是「仅新增文件」还是「含修改」
+adds=$(git diff --cached --name-only --diff-filter=A 2>/dev/null | grep -c . || true)
+mods=$(git diff --cached --name-only --diff-filter=M 2>/dev/null | grep -c . || true)
+if [ "${adds:-0}" -gt 0 ] && [ "${mods:-0}" -eq 0 ]; then
+  TAG="[ai-origin #$TASK_ID]"
+else
+  TAG="[ai-fix #$TASK_ID]"
+fi
+
+# 在首个 # 注释行之前插入标记；若整文件无注释行（如 git commit -m）则追加到末尾。
+# 注意：不能简单追加到文件末尾，否则会落在 git 的 # 注释区被剥离。
+tmp="$(mktemp)"
+inserted=0
+while IFS= read -r line; do
+  if [ "$inserted" -eq 0 ] && [ "${line#\#}" != "$line" ]; then
+    printf '%s\n' "$TAG" >> "$tmp"
+    inserted=1
+  fi
+  printf '%s\n' "$line" >> "$tmp"
+done < "$commit_msg_file"
+if [ "$inserted" -eq 0 ]; then
+  printf '\n%s\n' "$TAG" >> "$tmp"
+fi
+cat "$tmp" > "$commit_msg_file"
+rm -f "$tmp"
+exit 0

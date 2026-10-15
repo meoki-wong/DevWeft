@@ -1,0 +1,8 @@
+{
+  "patterns": [
+    { "pattern": "src/App.vue", "effect": "enforce", "note": "根组件" },
+    { "pattern": "package-lock.json", "effect": "enforce", "note": "依赖变更" },
+    { "pattern": "vite.config.*", "effect": "enforce", "note": "构建配置" },
+    { "pattern": "src/httpApi/**", "effect": "enforce", "note": "接口层" }
+  ]
+}

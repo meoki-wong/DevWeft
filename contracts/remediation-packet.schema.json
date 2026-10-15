@@ -1,0 +1,120 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agent-workflow.invalid/schemas/remediation-packet.schema.json",
+  "title": "CLRP Remediation Packet",
+  "type": "object",
+  "required": ["protocol", "taskId", "status", "loop", "classification", "actions", "forbidden"],
+  "additionalProperties": false,
+  "properties": {
+    "protocol": { "type": "string", "const": "CLRP/1" },
+    "taskId": { "type": "string", "minLength": 1 },
+    "repo": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["passed", "failed", "error", "IN_PROGRESS", "NOT_SUBMITTED", "BLOCKED", "NEEDS_HUMAN"]
+    },
+    "bindingId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "expectedTaskRevision": { "type": "integer", "minimum": 0 },
+    "submissionId": { "type": "string" },
+    "runGroupId": { "type": "string" },
+    "loop": {
+      "type": "object",
+      "required": ["state", "iteration", "maxIterations", "canRetry", "nextAllowed"],
+      "additionalProperties": true,
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "coding",
+            "waiting_gate",
+            "remediation_suite",
+            "remediation_product",
+            "green_pending_advance",
+            "needs_human",
+            "paused_ops"
+          ]
+        },
+        "iteration": { "type": "integer", "minimum": 0 },
+        "maxIterations": { "type": "integer", "minimum": 1 },
+        "canRetry": { "type": "boolean" },
+        "nextAllowed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "wait_terminal",
+              "wait_again",
+              "fix_spec",
+              "fix_product",
+              "distill",
+              "resubmit",
+              "advance",
+              "needs_human",
+              "ops"
+            ]
+          }
+        }
+      }
+    },
+    "classification": {
+      "type": "object",
+      "required": ["overall"],
+      "additionalProperties": true,
+      "properties": {
+        "overall": {
+          "type": "string",
+          "enum": ["suite", "product", "infra", "mixed", "none"]
+        },
+        "byCheck": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["caseKey", "class"],
+            "additionalProperties": true,
+            "properties": {
+              "caseKey": { "type": "string" },
+              "unit": { "type": ["string", "null"] },
+              "side": { "type": ["string", "null"] },
+              "class": {
+                "type": "string",
+                "enum": ["suite", "product", "infra", "unknown"]
+              },
+              "errorSignature": { "type": ["string", "null"] },
+              "detail": { "type": ["string", "null"] },
+              "hints": { "type": "array", "items": { "type": "string" } },
+              "featureKey": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "assets": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "featureKeys": { "type": "array", "items": { "type": "string" } },
+        "currentVersions": { "type": "array", "items": { "type": "integer" } }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tool"],
+        "additionalProperties": true,
+        "properties": {
+          "tool": { "type": "string" },
+          "args": { "type": "object" },
+          "required": { "type": "boolean" },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "forbidden": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "completionBlocked": { "type": "boolean" },
+    "message": { "type": "string" }
+  }
+}

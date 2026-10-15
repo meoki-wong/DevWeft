@@ -1,0 +1,12 @@
+{
+  "repos": {
+    "demo-app": {
+      "workspaceEnv": "AWP_REPO_PATH_DEMO_APP",
+      "casePrefix": "demo-app",
+      "suiteSlug": "demo-app",
+      "defaultSides": [],
+      "smoke": {},
+      "enabled": true
+    }
+  }
+}

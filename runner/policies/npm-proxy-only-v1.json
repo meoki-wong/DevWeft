@@ -1,0 +1,37 @@
+{
+  "networkPolicyId": "npm-proxy-only-v1",
+  "switch": "awp-isolated",
+  "switchType": "Internal",
+  "fabricCidr": "192.168.250.0/24",
+  "proxyIp": "192.168.250.1",
+  "proxyPort": 443,
+  "proxyHost": "packages.example.invalid",
+  "guestIp": "192.168.250.10",
+  "guestIpPool": [
+    "192.168.250.11",
+    "192.168.250.12",
+    "192.168.250.13",
+    "192.168.250.14",
+    "192.168.250.15",
+    "192.168.250.16",
+    "192.168.250.17",
+    "192.168.250.18",
+    "192.168.250.19",
+    "192.168.250.20",
+    "192.168.250.21",
+    "192.168.250.22",
+    "192.168.250.23",
+    "192.168.250.24",
+    "192.168.250.25",
+    "192.168.250.26"
+  ],
+  "guestIpNote": "并行 attempt 使用 guestIpPool（.11–.26）；.10 仅 golden/单机调试。同 lease 幂等释放，网络失败冷却 2min。",
+  "registry": "https://packages.example.invalid/npm/",
+  "acl": [
+    "Allow outbound -> 受控npm代理IP:443",
+    "Allow outbound -> 指定DNS:53（仅需要时）",
+    "Deny outbound  -> ANY",
+    "Deny inbound   -> ANY",
+    "Deny IPv6      -> ANY"
+  ]
+}

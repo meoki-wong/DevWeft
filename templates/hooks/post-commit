@@ -1,0 +1,43 @@
+#!/bin/bash
+# post-commit — 提交后自动分析「AI 产出修正」类改动并记录偏差到云端经验库
+# 【可选增强】主路径已改为版本末 Skill version-ai-distill（[ai-origin]/[ai-fix] + master tag）
+# 触发条件：最近一次提交的 message 包含 AI 修正标识（ai-drift / 修正AI / fix(ai / [ai-fix] 等）
+# 未命中标识 → 静默退出（普通开发提交零打扰）
+# 安装：git config core.hooksPath .githooks（每个成员 clone 后执行一次）
+# 服务器地址：AWP_AI_URL 环境变量 > 仓库 .env 的 AWP_AI_URL > 默认 http://127.0.0.1:8787（REST 基址，非 /mcp）
+# 日志：/tmp/drift-auto-hook.log
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+MSG=$(git log -1 --pretty=%B 2>/dev/null)
+
+# 1. 关键词匹配：只有带 AI 修正标识的提交才触发
+if ! echo "$MSG" | grep -qE "ai-drift|AI产出|AI 产出|fix\(ai|修正AI|修正 AI|\[ai-(fix|origin)"; then
+  exit 0
+fi
+
+# 2. node 定位（hook 环境 PATH 可能不含 nvm 的 node）
+NODE_BIN=$(command -v node 2>/dev/null || true)
+if [ -z "$NODE_BIN" ]; then
+  LATEST_NVM=$(ls "$HOME/.nvm/versions/node" 2>/dev/null | tail -1)
+  if [ -n "$LATEST_NVM" ]; then
+    NODE_BIN="$HOME/.nvm/versions/node/$LATEST_NVM/bin/node"
+  fi
+fi
+if [ -z "$NODE_BIN" ]; then
+  echo "[post-commit] 未找到 node，跳过自动记录（可手动执行 node scripts/ai-mcp/drift-auto.mjs --last）" >&2
+  exit 0
+fi
+
+# 3. 解析服务端地址（环境变量 > 仓库 .env > 默认 REST 基址），后台异步捕获，不阻塞提交
+if [ -z "${AWP_AI_URL:-}" ]; then
+  AWP_AI_URL="$(grep -E "^[[:space:]]*AWP_AI_URL[[:space:]]*=" "$ROOT/.env" 2>/dev/null | tail -1 | sed -E "s/^[^=]*=[[:space:]]*//; s/^['\"]//; s/['\"]*[[:space:]]*$//")"
+fi
+export AWP_AI_URL="${AWP_AI_URL:-http://127.0.0.1:8787}"
+SCRIPT="$ROOT/scripts/ai-mcp/drift-auto.mjs"
+if [ ! -f "$SCRIPT" ]; then
+  echo "[post-commit] ⚠️ 未找到 $SCRIPT，自动偏差捕获未配置（提交正常，但 AI 偏差不会写入经验库）" >&2
+  exit 0
+fi
+# 同步执行（drift-auto 自带 5s 超时兜底、异常仅 log 不阻塞提交）。
+# 注：原 nohup ... & 后台方案在本机 shell 退出时会被进程树清理杀掉，导致沉淀丢失，故改为前台同步。
+"$NODE_BIN" "$SCRIPT" --last

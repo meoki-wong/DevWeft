@@ -1,0 +1,6 @@
+# 行尾策略（仅约束脚本，避免 autocrlf 破坏跨机执行）
+# 备用机 POSIX 脚本必须 LF：否则 shebang / 行尾 \r 会让 Mac/Linux bash 解析报错
+*.sh text eol=lf
+# Windows 脚本保持 CRLF（本机原生）
+*.ps1 text eol=crlf
+*.cmd text eol=crlf

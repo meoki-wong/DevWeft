@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workflow.invalid/contracts/run-spec.schema.json",
+  "title": "RunSpec",
+  "description": "RFC 8785 canonical JSON signed with Ed25519. audience must be awp-guest-agent. Guest public key/hash must be included before signing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "attempt",
+    "leaseEpoch",
+    "bindingId",
+    "sourceBlobSha256",
+    "suiteLockSha256",
+    "suiteBlobSha256",
+    "profileRevisionId",
+    "policyRevisionId",
+    "runnerImageId",
+    "runnerImageManifestSha256",
+    "unit",
+    "side",
+    "purpose",
+    "resourceLimits",
+    "timeouts",
+    "networkPolicyId",
+    "secretRefs",
+    "nonce",
+    "issuedAt",
+    "expiresAt",
+    "audience",
+    "guestPublicKey",
+    "guestKeySha256"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "runId": { "$ref": "#/$defs/uuid" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "leaseEpoch": { "type": "integer", "minimum": 1 },
+    "bindingId": { "$ref": "#/$defs/sha256" },
+    "sourceBlobSha256": { "$ref": "#/$defs/sha256" },
+    "suiteLockSha256": { "$ref": "#/$defs/sha256" },
+    "suiteBlobSha256": { "$ref": "#/$defs/sha256" },
+    "profileRevisionId": { "$ref": "#/$defs/uuid" },
+    "policyRevisionId": { "$ref": "#/$defs/uuid" },
+    "runnerImageId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "runnerImageManifestSha256": { "$ref": "#/$defs/sha256" },
+    "unit": { "type": "string", "enum": ["static", "smoke"] },
+    "side": { "type": "string", "minLength": 1 },
+    "purpose": { "type": "string", "enum": ["gate", "diagnostic"] },
+    "resourceLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vcpu", "memoryGiB"],
+      "description": "Phase 1 attempt VM is fixed at 4 vCPU / 8GiB with dynamic memory disabled.",
+      "properties": {
+        "vcpu": { "type": "integer", "const": 4 },
+        "memoryGiB": { "type": "integer", "const": 8 }
+      }
+    },
+    "timeouts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provisionSeconds",
+        "installSeconds",
+        "staticSeconds",
+        "viteReadySeconds",
+        "smokeSeconds",
+        "artifactSeconds",
+        "totalSeconds"
+      ],
+      "properties": {
+        "provisionSeconds": { "type": "integer", "minimum": 1 },
+        "installSeconds": { "type": "integer", "minimum": 1 },
+        "staticSeconds": { "type": "integer", "minimum": 1 },
+        "viteReadySeconds": { "type": "integer", "minimum": 1 },
+        "smokeSeconds": { "type": "integer", "minimum": 1 },
+        "artifactSeconds": { "type": "integer", "minimum": 1 },
+        "totalSeconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "networkPolicyId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "secretRefs": {
+      "type": "array",
+      "description": "Control plane and RunSpec carry secret_ref only; plaintext never appears here.",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 16,
+      "description": "Single-use nonce; consumed in runspec_nonces before VM start."
+    },
+    "issuedAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "audience": { "type": "string", "const": "awp-guest-agent" },
+    "guestPublicKey": {
+      "type": "string",
+      "minLength": 32,
+      "description": "PEM public key of the attempt-scoped Ed25519 keypair."
+    },
+    "guestKeySha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workflow.invalid/contracts/binding.schema.json",
+  "title": "CanonicalTestBindingDocument",
+  "description": "binding_id = SHA-256(canonical JSON). Keys recursively sorted, UTF-8, no whitespace, no floats. Null must be present; do not omit nullable fields.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "repoId",
+    "sourceRemoteId",
+    "branchIncarnationId",
+    "taskInstanceId",
+    "headCommitOid",
+    "snapshotTreeOid",
+    "changedPathsSha256",
+    "targetRemoteId",
+    "targetRef",
+    "targetCommitOid",
+    "suiteLockSha256",
+    "effectiveSuiteTreeOid",
+    "executionProfileRevisionId",
+    "runnerImageId",
+    "runnerImageManifestSha256",
+    "policyRevisionId",
+    "resolvedSides",
+    "requiredCaseSetSha256"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "repoId": { "$ref": "#/$defs/uuid" },
+    "sourceRemoteId": { "$ref": "#/$defs/uuid" },
+    "branchIncarnationId": {
+      "anyOf": [
+        { "$ref": "#/$defs/uuid" },
+        { "type": "null" }
+      ]
+    },
+    "taskInstanceId": { "$ref": "#/$defs/uuid" },
+    "headCommitOid": { "$ref": "#/$defs/gitOid" },
+    "snapshotTreeOid": { "$ref": "#/$defs/gitOid" },
+    "changedPathsSha256": { "$ref": "#/$defs/sha256" },
+    "targetRemoteId": { "$ref": "#/$defs/uuid" },
+    "targetRef": {
+      "type": "string",
+      "minLength": 11,
+      "pattern": "^refs/"
+    },
+    "targetCommitOid": { "$ref": "#/$defs/gitOid" },
+    "suiteLockSha256": { "$ref": "#/$defs/sha256" },
+    "effectiveSuiteTreeOid": { "$ref": "#/$defs/gitOid" },
+    "executionProfileRevisionId": { "$ref": "#/$defs/uuid" },
+    "runnerImageId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "runnerImageManifestSha256": { "$ref": "#/$defs/sha256" },
+    "policyRevisionId": { "$ref": "#/$defs/uuid" },
+    "resolvedSides": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "requiredCaseSetSha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "gitOid": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}([a-f0-9]{24})?$"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "controlPlaneThumbprints": ["replace-with-sha256-of-control-plane-client-cert"],
+  "workers": [
+    {
+      "workerId": "00000000-0000-4000-8000-000000000001",
+      "thumbprint": "replace-with-sha256-of-worker-client-cert"
+    }
+  ]
+}
