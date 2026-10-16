@@ -36,8 +36,8 @@ export async function verifyImageOrThrow(db, imageRow, vhdxPath) {
     const manifest = JSON.parse(imageRow.manifest_json)
     if (!manifest || manifest.vhdxSha256 !== imageRow.vhdx_sha256) throw new Error('IMAGE_CHANGED')
   }
-  if (vhdxPath && existsSync(vhdxPath) && !verifyVhdxSha256(vhdxPath, imageRow.vhdx_sha256)) {
-    throw new Error('IMAGE_CHANGED')
+  if (vhdxPath && (!existsSync(vhdxPath) || !verifyVhdxSha256(vhdxPath, imageRow.vhdx_sha256))) {
+    throw new Error(existsSync(vhdxPath) ? 'IMAGE_CHANGED' : 'RUNNER_IMAGE_MISSING')
   }
 }
 
@@ -135,7 +135,8 @@ export async function uploadAttemptArtifact(db, blobs, worker, reservation, acce
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const workerId = process.env.AWP_WORKER_ID
   const thumb = process.env.AWP_WORKER_CERT_THUMBPRINT
-  const vhdx = process.env.AWP_GOLDEN_VHDX || 'C:\\awp-runner\\images\\golden.vhdx'
+  const runnerRoot = process.env.AWP_RUNNER_ROOT || join(repoRoot, 'data', 'runner')
+  const vhdx = process.env.AWP_GOLDEN_VHDX || join(runnerRoot, 'images', 'golden.vhdx')
   if (!workerId || !thumb) {
     process.stderr.write('Host Worker 需要 AWP_WORKER_ID 与 AWP_WORKER_CERT_THUMBPRINT\n')
     process.exit(2)

@@ -50,8 +50,8 @@ describe('执行资产冻结清单', () => {
       specRow({ spec_id: 's4', feature_key: 'shared-flow', spec_type: 'e2e', side: null, blob_sha256: SHA_B }),
     ])
     expect(lockedCasesForRun(lock, { unit: 'static' }).map((s) => s.featureKey)).toEqual(['amount-format'])
-    expect(lockedCasesForRun(lock, { unit: 'smoke', side: 'web' }).map((s) => s.featureKey)).toEqual(['web-flow', 'shared-flow'])
-    expect(lockedCasesForRun(lock, { unit: 'smoke', side: 'admin' }).map((s) => s.featureKey)).toEqual(['shared-flow', 'admin-flow'])
+    expect(lockedCasesForRun(lock, { unit: 'smoke', side: 'web' }).map((s) => s.featureKey)).toEqual(['shared-flow', 'web-flow'])
+    expect(lockedCasesForRun(lock, { unit: 'smoke', side: 'admin' }).map((s) => s.featureKey)).toEqual(['admin-flow', 'shared-flow'])
   })
 
   it('loadLockedSpecs：清单内容不可用 → 抛错（fail-closed，不降级成"少跑一卷"）', async () => {

@@ -164,8 +164,12 @@ export const SPEC_PLATFORM_RULES = Object.freeze([
 
 export const GOLDEN_E2E_SPEC = `// Generic browser test template
 export default async function run({ page, baseURL, expect }) {
+  const navigation = page.waitForResponse((response) => response.request().isNavigationRequest())
   await page.goto(baseURL)
-  await expect(page.locator('body')).toBeVisible()
+  const response = await navigation
+  await expect(response).toBeOK()
+  const app = page.locator('[data-test="app"]')
+  await expect(app).toContainText('DevWeft example')
 }
 `
 

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "featureKey": "example-page",
+  "side": "web",
+  "description": "Public sample contract for the greeting endpoint and page.",
+  "scenarios": ["success", "empty", "not-found"],
+  "routes": [
+    {
+      "id": "greeting-ok",
+      "match": { "method": "GET", "pathIncludes": "/api/greeting" },
+      "response": { "status": 200, "bodyShape": { "message": "string" } }
+    },
+    {
+      "id": "health-ok",
+      "match": { "method": "GET", "pathIncludes": "/health" },
+      "response": { "status": 200, "bodyShape": { "status": "string" } }
+    }
+  ]
+}

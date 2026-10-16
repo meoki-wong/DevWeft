@@ -10,6 +10,7 @@ import { loadOrCreateWorkerIdentity } from './identity.mjs'
 import { touchWorkerHeartbeat, sweepWorkerHeartbeats, countOtherActiveWorkers } from '../../testing/workers.js'
 import { reconcileRuns } from '../../testing/leases.js'
 import { runStaticLane } from './run-static-lane.mjs'
+import { runLocalLane } from '../local/run-lane.mjs'
 import {
   claimPendingDeferred, completeDeferred, failDeferred, sweepStaleClaimed, classifyDeferredError,
 } from '../../testing/deferred.js'
@@ -20,6 +21,8 @@ import { resolveRepoWorkspacePath } from '../../testing/repo-platform.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createRunnerBackendAdapter } from '../../extensions/adapters.js'
+import { normalizeExtensionError } from '../../extensions/contracts.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(here, '..', '..')
@@ -27,7 +30,7 @@ const WORKER_HEARTBEAT_MS = 15 * 1000
 
 if (DB_DIALECT === 'sqlite') initDB()
 else await openDb() // postgres：结构由 baseline.sql 负责，仅连接（§13.1）
-const runnerRoot = process.env.AWP_RUNNER_ROOT || 'C:\\awp-runner'
+const runnerRoot = process.env.AWP_RUNNER_ROOT || join(repoRoot, 'data', 'runner')
 // 有 dev PKI 就用证书指纹身份，否则维持随机身份（dev）
 const certPemPath = join(repoRoot, 'secret-broker', 'dev-certs', 'worker.crt')
 // identity 已异步化(方案 §7 await 化):ESM 顶层 await
@@ -40,6 +43,7 @@ process.stdout.write(`[host-worker] ${worker.worker_id} thumbprint=${worker.cert
 
 let active = 0
 let stopping = false
+const shutdownController = new AbortController()
 
 /** 从 DB platform_settings 读并发上限（每次 tick 刷新，看板改了立即生效）；env 优先 */
 async function getConcurrency() {
@@ -53,12 +57,37 @@ async function getConcurrency() {
   return 2
 }
 
-async function queuedCount() {
+async function queuedCount(unit = null) {
   // PG COUNT(*) 返回 bigint 字符串，必须 Number() 否则 ===0 恒假、空队列也起 lane
-  const row = await db.prepare(
-    `SELECT COUNT(*) AS c FROM test_runs WHERE status='queued' AND desired_state='running'`
-  ).get()
+  const row = unit
+    ? await db.prepare(`SELECT COUNT(*) AS c FROM test_runs WHERE status='queued' AND desired_state='running' AND unit=?`).get(unit)
+    : await db.prepare(`SELECT COUNT(*) AS c FROM test_runs WHERE status='queued' AND desired_state='running'`).get()
   return Number(row?.c || 0)
+}
+
+function getRunnerBackend() {
+  const backend = String(process.env.AWP_RUNNER_BACKEND || 'hyperv').trim().toLowerCase()
+  if (!['hyperv', 'local'].includes(backend)) throw new Error('AWP_RUNNER_BACKEND must be hyperv or local')
+  return backend
+}
+
+function runnerBackendAdapter(id) {
+  if (id === 'local') {
+    return createRunnerBackendAdapter({
+      id,
+      capabilities: { isolation: 'host-process', units: ['static'], acceptsSecrets: false },
+      runLane: () => runLocalLane({ runnerRoot, blobRoot: process.env.AWP_BLOB_ROOT || join(repoRoot, 'data', 'blobs'), signal: shutdownController.signal }),
+    })
+  }
+  return createRunnerBackendAdapter({
+    id: 'hyperv',
+    capabilities: { isolation: 'hyperv-vm', units: ['static', 'smoke'], acceptsSecrets: true },
+    runLane: () => runStaticLane({
+      runnerRoot,
+      goldenVhdx: process.env.AWP_GOLDEN_VHDX || join(runnerRoot, 'images', 'golden.vhdx'),
+      passwordFile: process.env.AWP_GOLDEN_PASSWORD_FILE || join(runnerRoot, 'images', 'golden.admin.password'),
+    }),
+  })
 }
 
 /**
@@ -166,18 +195,18 @@ async function tick() {
   // 绝不领 run / 不起 Hyper-V lane —— 否则会与主机抢租约、在备用机 E:\ 工作区跑测试并在宿主弹终端窗口。
   if (isStandbyControlPlane()) return
   const max = await getConcurrency()
-  if (active >= max || stopping || await queuedCount() === 0) return
+  const backendId = getRunnerBackend()
+  if (active >= max || stopping || await queuedCount(backendId === 'local' ? 'static' : null) === 0) return
   // 内存水位闸：可用内存不足时领新 run 必撞 Start-VM OOM，不领、等下轮（queued 不烧 attempt）
-  if (!hostFreeMemoryOk()) return
+  if (backendId === 'hyperv' && !hostFreeMemoryOk()) return
+  const backend = runnerBackendAdapter(backendId)
   active += 1
-  runStaticLane({
-    runnerRoot,
-    goldenVhdx: process.env.AWP_GOLDEN_VHDX || join(runnerRoot, 'images', 'golden.vhdx'),
-    passwordFile: process.env.AWP_GOLDEN_PASSWORD_FILE || join(runnerRoot, 'images', 'golden.admin.password'),
-  }).then((out) => {
-    process.stdout.write(`[host-worker] run ${out.reservation.runId} status=${out.result.status}\n`)
+  const execution = backend.runLane()
+  execution.then((out) => {
+    if (out) process.stdout.write(`[host-worker] run ${out.reservation.runId} status=${out.result.status} backend=${backend.id}\n`)
   }).catch((err) => {
-    process.stderr.write(`[host-worker] lane 失败: ${err.message}\n${err.stack || ''}\n`)
+    const failure = normalizeExtensionError(err, `${backend.id} runner`)
+    process.stderr.write(`[host-worker] lane 失败 (${failure.code}): ${failure.message}\n`)
   }).finally(() => {
     active -= 1
   })
@@ -190,6 +219,12 @@ process.stdout.write(`[host-worker] heartbeat loop started (15s, concurrency=up 
 process.on('SIGINT', () => {
   stopping = true
   clearInterval(timer)
-  process.exit(0)
+  shutdownController.abort(new Error('worker shutdown'))
+})
+
+process.on('SIGTERM', () => {
+  stopping = true
+  clearInterval(timer)
+  shutdownController.abort(new Error('worker shutdown'))
 })
 void readFileSync

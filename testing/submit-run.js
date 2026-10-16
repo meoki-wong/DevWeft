@@ -369,7 +369,6 @@ export async function submitGateRun(db, {
         targetRemoteId: remote.remote_id,
         targetRef: 'refs/heads/stage',
         targetCommitOid: snap.headCommitOid,
-        mr: null,
       },
       bundle: { sha256: snap.bundleSha256, size: snap.bundleSize },
       suiteRequest: { mode: 'auto', candidateRevisionIds: [], candidateApprovalIds: [] },

@@ -7,6 +7,7 @@
 import { z } from 'zod'
 import db from '../db.js'
 import { submitGateRun } from '../testing/submit-run.js'
+import { explainTestRun } from '../testing/explain.js'
 import { getDeferredById, DEFERRED_STATUS } from '../testing/deferred.js'
 import { isCloudTestingEnabled, getRepoGateMode } from '../harness/testing-gate.js'
 import { recordAuditEvent } from '../audit/index.js'
@@ -74,9 +75,9 @@ export function registerTestRunTools(server) {
     {
       title: '提交云端门禁测试（默认阻塞到终态）',
       description:
-        '提交云端门禁测试（默认阻塞到终态）。' +
-        '⚠️ 关键（跨机器）：云端门禁与你的开发机通常不是同一台/同一工作区（回执 source.workspacePath 会显示门禁工作区）。你磁盘上的改动门禁读不到，故每次下单必须：① 用 `git diff`（含新文件先 `git add -N .` 再 diff）生成未提交改动补丁，传 codeDiff；② 用 `git rev-parse HEAD` 取你的 base 版本号，传 codeCommitOid。门禁流程：fetch → 切到你报的 base → 应用你的 diff → 脏区快照送测。' +
-        '⚠️ 全程只读生成 diff/baseSha，禁止 git commit/push，也禁止要求用户提交代码（diff 与 rev-parse 都是只读命令，不改仓库历史）。' +
+        '提交到当前仓库配置的测试 runner（默认阻塞到终态）。' +
+        '如果配置的 runner 不共享当前工作区，才需要传 codeDiff 与 codeCommitOid。执行前应检查 patch，仅包含本任务必要的改动，并移除凭据、私有数据、生成文件和无关改动；只有在用户请求通过已配置的远程 runner 测试时才传输源代码。' +
+        '同工作区或本地 runner 不应传 codeDiff。该工具不会创建 commit 或 push。' +
         '多仓：必须传 repo=业务仓 slug；未传时按 taskId 任务归属解析，禁止默认串仓。' +
         '默认 wait=true 阻塞直到 passed/failed/error，返回 CLRP Remediation Packet。' +
         '产品代码有变更 → static+smoke；仅改考卷且产品快照与上次全绿相同 → 自动 spec-only（跳过 static，只跑 smoke）。' +
@@ -108,11 +109,11 @@ export function registerTestRunTools(server) {
         codeCommitOid: z
           .string()
           .optional()
-          .describe('你的 base 版本号 = `git rev-parse HEAD`（你在其上改动、未提交）。传 codeDiff 时务必同时传它，门禁据此精确对齐底版；对不齐会显式失败，不静默测错代码。失败后必须显式目标重试成功才能解除来源锁。'),
+          .describe('测试快照的基线 commit。仅当远程 runner 需要应用 codeDiff 时必传，需与该 patch 的基线匹配；无匹配时测试会明确失败。'),
         codeDiff: z
           .string()
           .optional()
-          .describe('你的未提交改动的 git diff 补丁全文（跨机器送测唯一 product 通道）。生成：`git add -N .` 后 `git diff`（含新文件）。门禁：fetch→切到 codeCommitOid(base)→应用此 diff→脏区快照。若你的改动已在门禁工作区（同机）则勿传。'),
+          .describe('仅用于无法访问当前工作区的已配置远程 runner：经过检查、仅含本任务必要改动的 patch。排除凭据、私有数据、生成文件和无关改动；同时传 codeCommitOid。共享工作区或本地 runner 不传。'),
         triggerReason: z.string().max(1000).optional().describe('本次提交/重提原因，写入收据；不要包含凭据'),
       },
     },
@@ -387,6 +388,25 @@ export function registerTestRunTools(server) {
         return textOut(`下单失败：${e.code || e.message}${e.detail ? `：${e.detail}` : ''}`)
       }
     }
+  )
+
+  server.registerTool(
+    'awp_test_explain',
+    {
+      title: '解释一次测试运行的选择依据',
+      description: '只读查询某次 run 为什么包含这些 lane、用例和执行环境。依据来自不可变 run binding、suite lock、profile、image 与 policy revision；不会重新规划、启动测试或写入审计/运行数据。必须提供 repo，或使用已绑定仓库的 MCP 连接。',
+      inputSchema: {
+        runId: z.string().min(1).max(128).describe('需要解释的 test run ID'),
+        repo: z.string().min(1).describe('项目 slug；必须与 run 所属仓库一致'),
+      },
+    },
+    async ({ runId, repo }) => {
+      try {
+        return textOut(await explainTestRun(db, runId, { repoSlug: repo }))
+      } catch (error) {
+        return textOut({ error: error.code || 'INVALID_SCHEMA', message: error.message })
+      }
+    },
   )
 }
 

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "title": "Example app repository checks",
+  "requiredCapabilities": [],
+  "cases": [
+    { "caseKey": "test:smoke/web", "title": "Public page smoke test", "tags": ["smoke", "web"], "protected": true, "replacesCaseKey": null, "requiredCapabilities": ["playwright"] },
+    { "caseKey": "test:smoke/admin", "title": "Admin page smoke test", "tags": ["smoke", "web"], "protected": true, "replacesCaseKey": null, "requiredCapabilities": ["playwright"] }
+  ]
+}

@@ -217,18 +217,16 @@ describe('M0 contracts', () => {
     }, report)
   })
 
-  it('keeps error codes in sync across errors.md, OpenAPI and §17', () => {
+  it('keeps the OpenAPI error enum in sync with the canonical errors.md list', () => {
     const errorsMd = readFileSync(join(contractsDir, 'errors.md'), 'utf8')
     const openapi = readFileSync(join(contractsDir, 'testing-openapi.yaml'), 'utf8')
-    const enterprise = readFileSync(join(dir, '..', 'docs', 'TEST-PLATFORM-ENTERPRISE.md'), 'utf8')
     const fromMd = errorCodesFromMarkdown(errorsMd)
     expect(fromMd.length).toBeGreaterThan(30)
+    expect(errorsMd).toContain('唯一权威来源')
+    expect(openapi).toContain('contracts/errors.md')
     const enumBlock = openapi.split('ErrorCode:')[1].split('ErrorObject:')[0]
     const fromOpenApi = [...enumBlock.matchAll(/- ([A-Z][A-Z0-9_]+)/g)].map((m) => m[1])
     expect([...fromOpenApi].sort()).toEqual([...fromMd].sort())
-    for (const code of fromMd) {
-      expect(enterprise).toContain('`' + code + '`')
-    }
   })
 
   it('OpenAPI lists frozen control-plane and broker paths', () => {

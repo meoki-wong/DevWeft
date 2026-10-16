@@ -20,6 +20,7 @@ export default defineConfig({
     globalSetup: ['test/global-setup-pg.mjs'],
 
     testTimeout: 60000, // async 化后 e2e 模拟套件单测耗时上移(微任务+事务队列),15s 会误伤
+    hookTimeout: 60000, // PGlite 需在 beforeAll 中构建 PostgreSQL 基线与 RLS 策略
 
     // 注意：不要开 fileParallelism:false——threads 池串行反复加载 better-sqlite3
 

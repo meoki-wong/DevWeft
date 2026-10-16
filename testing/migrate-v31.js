@@ -13,12 +13,13 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 const dir = path.dirname(fileURLToPath(import.meta.url))
-const SCHEMA_V31_SQL = (() => {
-  try { return readFileSync(path.join(dir, 'schema-v31.sql'), 'utf8') } catch { return '' }
-})()
+const SCHEMA_V31_SQL = readFileSync(path.join(dir, 'schema-v31.sql'), 'utf8')
+
+export function getV31MigrationChecksum() {
+  return createHash('sha256').update(SCHEMA_V31_SQL).digest('hex')
+}
 
 export function applyV31TestSpecsApiType(db, { applyVersionedMigration }) {
-  if (!SCHEMA_V31_SQL) return
   const ddl = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='test_specs'`).get()?.sql || ''
   if (ddl.includes("'api'")) return
   const hasTable = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='test_specs'`).get()
@@ -30,7 +31,7 @@ export function applyV31TestSpecsApiType(db, { applyVersionedMigration }) {
   applyVersionedMigration(db, {
     version: 31,
     name: 'test_specs_api_type_rebuild',
-    checksum: createHash('sha256').update(SCHEMA_V31_SQL).digest('hex'),
+    checksum: getV31MigrationChecksum(),
     apply: (db) => {
       db.exec(`ALTER TABLE test_specs RENAME TO test_specs_v31_old`)
       db.exec(SCHEMA_V31_SQL)

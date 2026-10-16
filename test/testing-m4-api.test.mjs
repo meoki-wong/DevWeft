@@ -152,7 +152,7 @@ describe('M4-B: promotion_proposals + replay_runs + reviews', () => {
     await transitionProposal(db, { proposalId: 'pp1', toState: 'diffing' })
     await transitionProposal(db, { proposalId: 'pp1', toState: 'replaying', replaySummary: '{"ok":1}' })
     await transitionProposal(db, { proposalId: 'pp1', toState: 'reviewing' })
-    await transitionProposal(db, { proposalId: 'pp1', toState: 'merging', mrState: 'opened' })
+    await transitionProposal(db, { proposalId: 'pp1', toState: 'merging' })
     await transitionProposal(db, { proposalId: 'pp1', toState: 'published', publishedRevisionId: 'sr2' })
     const p = await getProposal(db, 'pp1')
     expect(p.state).toBe('published')

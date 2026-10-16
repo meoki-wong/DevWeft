@@ -7,12 +7,15 @@ import { getBinding } from './bindings.js'
 import { createBlobStore } from './blobs.js'
 import { envelope, sendError, ApiError } from './errors.js'
 import { rememberIdempotency } from './idempotency.js'
-import { resolveGitContext } from './remotes.js'
+import { genericGitProvider } from './remotes.js'
+import { createBlobBackendAdapter } from '../extensions/adapters.js'
+import { validateExtension } from '../extensions/contracts.js'
 import { createTestSubmission, getTestSubmission } from './submissions.js'
 import { submitTestSpec, getTestSpec, activeSpecsForRepo } from './test-specs.js'
 import { previewSuitePlan } from './suite-plan.js'
 import { authenticateWorker, acquireLease, acceptLease, heartbeatLease, completeLease, rejectLease } from './leases.js'
 import { evaluateNewGate } from '../harness/testing-gate.js'
+import { explainTestRun } from './explain.js'
 import {
   prepareRunArtifact, markArtifactUploaded, issueArtifactDownloadUrl, consumeArtifactDownload,
 } from './artifacts.js'
@@ -53,8 +56,11 @@ export function mountBlobRoutes(app, { database = db, blobs }) {
   })
 }
 
-export function mountTestingRoutes(app, { database = db, blobRoot, tlsRequired = false } = {}) {
-  const blobs = createBlobStore(blobRoot || path.join(root, 'data', 'blobs'))
+export function mountTestingRoutes(app, { database = db, blobRoot, tlsRequired = false, disableBlobRoutes = false, gitProvider = genericGitProvider, blobBackend = null } = {}) {
+  validateExtension('gitProvider', gitProvider)
+  const blobs = disableBlobRoutes ? null : blobBackend
+    ? validateExtension('blobBackend', blobBackend)
+    : createBlobBackendAdapter('local-filesystem', createBlobStore(blobRoot || path.join(root, 'data', 'blobs')))
   workerTlsRequired = Boolean(tlsRequired)
 
   app.use('/v1', (req, res, next) => {
@@ -66,7 +72,7 @@ export function mountTestingRoutes(app, { database = db, blobRoot, tlsRequired =
   app.post('/v1/git-contexts:resolve', async (req, res) => {
     try {
       const principal = await authenticateBearer(database, req.headers.authorization)
-      const data = await resolveGitContext(database, req.body || {})
+      const data = await gitProvider.resolveContext(database, req.body || {})
       requireRepoPermission(principal, data.repoId, 'submit')
       const key = req.headers['idempotency-key']
       if (!key) throw new ApiError('INVALID_SCHEMA')
@@ -84,7 +90,13 @@ export function mountTestingRoutes(app, { database = db, blobRoot, tlsRequired =
     }
   })
 
-  mountBlobRoutes(app, { database, blobs })
+  if (disableBlobRoutes) {
+    const unavailable = (req, res) => sendError(res, new ApiError('BLOB_STORE_UNAVAILABLE'), req.awpRequestId)
+    app.post('/v1/blobs:prepare', unavailable)
+    app.put('/v1/blobs/uploads/:uploadId', unavailable)
+  } else {
+    mountBlobRoutes(app, { database, blobs })
+  }
 
   app.get('/v1/test-bindings/:bindingId', async (req, res) => {
     try {
@@ -339,6 +351,19 @@ export function mountTestingRoutes(app, { database = db, blobRoot, tlsRequired =
       if (!row || !row.report_json) throw new ApiError('INVALID_SCHEMA')
       requireRepoPermission(principal, row.repo_id, 'read_result')
       res.json(envelope(JSON.parse(row.report_json), null, req.awpRequestId))
+    } catch (err) {
+      sendError(res, err, req.awpRequestId)
+    }
+  })
+
+  app.get('/v1/test-runs/:runId/explain', async (req, res) => {
+    try {
+      const principal = await authenticateBearer(database, req.headers.authorization)
+      const row = await database.prepare('SELECT repo_id FROM test_runs WHERE run_id=?').get(req.params.runId)
+      if (!row) throw new ApiError('RUN_NOT_FOUND')
+      requireRepoPermission(principal, row.repo_id, 'read_result')
+      const explanation = await explainTestRun(database, req.params.runId)
+      res.json(envelope(explanation, null, req.awpRequestId))
     } catch (err) {
       sendError(res, err, req.awpRequestId)
     }

@@ -31,6 +31,7 @@ export const ALL_REPO_PERMISSIONS = [
 export async function bootstrapTestingPlatform(db, {
   slug = 'demo-app',
   remoteUrl = null,
+  gitProvider = 'generic',
   rotateToken = false,
 } = {}) {
   const system = await findPrincipalBySubject(db, SYSTEM_SUBJECT)
@@ -55,7 +56,7 @@ export async function bootstrapTestingPlatform(db, {
     remote = await registerRemote(db, {
       repoId,
       url: remoteUrl,
-      provider: 'gitlab',
+      provider: gitProvider,
       providerInstance: new URL(canonicalizeRemoteUrl(remoteUrl)).host,
     })
   }

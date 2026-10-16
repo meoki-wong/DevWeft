@@ -52,7 +52,7 @@ async function insertIncarnation(db, {
 
 /**
  * Authoritative branch generation update. Callers must pass ancestry from
- * GitLab ref API + server-side git merge-base, not from the client branch name.
+ * Git-provider ref data plus server-side git merge-base, not from the client branch name.
  */
 export async function observeBranchRef(db, {
   remoteId,
@@ -198,7 +198,7 @@ export async function observeBranchRef(db, {
   return await db.tx(tx)
 }
 
-/** Client tip from git-contexts:resolve. No GitLab/ancestry yet: first/same-tip only. */
+/** Client tip from git-contexts:resolve. Without provider ancestry, accept first/same-tip only. */
 export async function bindClientTipObservation(db, { remoteId, fullRef, headCommitOid }) {
   const active = await getActiveIncarnation(db, remoteId, fullRef)
   if (!active) {

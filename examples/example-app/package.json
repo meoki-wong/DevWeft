@@ -1,0 +1,13 @@
+{
+  "name": "devweft-example-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dependency-free example repository for validating a DevWeft installation.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "build:web": "node scripts/build.mjs web",
+    "build:admin": "node scripts/build.mjs admin",
+    "start": "node src/server.mjs"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/meoki-wong/DevWeft/main/schemas/project-config.schema.json",
+  "schemaVersion": 1,
+  "checks": [
+    {
+      "id": "node-unit",
+      "name": "Node.js unit tests",
+      "command": ["node", "--test"],
+      "timeoutSeconds": 300
+    }
+  ]
+}

@@ -1,7 +1,5 @@
 /**
- * context.js — 按 phase + size 返回上下文装配包（IDE 无关）
- * 测试是否发生由 Harness 控制；禁止让用户执行平台操作命令。
- * CLRP：云端未终态禁止宣称完成；失败必须按返工包回环。
+ * Build IDE-independent context packs for each tracked task phase.
  */
 import { PHASE_LABELS, SIZE_LABELS, buildWorkflowView } from './labels.js'
 import { phaseToActivity, exitCriteriaFor, toolsForActivity } from './activity-plan.js'
@@ -24,7 +22,7 @@ const ACTIVITY_INSTRUCTIONS = {
   classify: '信号已记录。按 activityPlan 进入下一活动。',
   retrieve: '用 query_docs 检索片段，结论写入 decisions。不要用 get_doc 拉全文。',
   plan: '提交 pending 或 decisions，以及 data.acceptance。快照之前 AC 可以改。',
-  execute: '改代码并 verify_report(L1)。然后 awp_test_run(wait=true)，side 只填实际改动端。⚠跨机器：门禁读不到你磁盘的改动，必须传 codeDiff（`git add -N .` 后 `git diff` 全文）+ codeCommitOid（`git rev-parse HEAD` 的 base）；门禁会切到你的 base 再应用 diff 做脏区快照送测。全程只读生成，禁止 git commit/push。失败后在本活动 distill_append，不要为了写经验推进到 distill。未绿不能完成。',
+  execute: 'Run verify_report(L1), then use awp_test_run with the configured side and wait for a terminal result. If a configured remote runner cannot access this workspace, send only a reviewed, minimal patch when the task authorizes remote testing; exclude credentials and unrelated files. Do not create commits or push. Follow failure guidance in the current activity; do not advance until required checks pass.',
   static: '静态检查未绿不能完成。失败后在本活动 distill_append，再重提。',
   smoke: '只跑已确定的端。端未定先声明 side。失败后在本活动 distill_append，再重提。',
   distill: '写完经验后回到进入沉淀前的活动，不会退回 plan。',
@@ -54,7 +52,10 @@ export function buildContextPack(phase, { size = null, type = null, testing = nu
     instructions += `\n任务材料（需求/接口/设计，已随任务持久化，禁止凭记忆复述需求）：\n${attachmentsText}`
   }
   if (testing) {
-    instructions += `\n测试由 Harness 控制（mode=${testing.mode}）。禁止让用户执行操作命令，禁止要求用户 git commit/push，也不要自己 commit——云端门禁与你的开发机通常不同工作区，改动靠 codeDiff（git diff 全文）+ codeCommitOid（base HEAD）上传，门禁切到 base 再应用 diff 做脏区快照送测（diff/rev-parse 均只读）。`
+    instructions += `\nTests use the configured runner (mode=${testing.mode}). Do not assume it is remote. If it cannot access this workspace, send only a reviewed, minimal task patch and matching base commit when the user requested testing through that configured runner. Exclude credentials, private data, generated files, and unrelated work. Do not create commits or push.`
+    if (testing.humanMustNotRunOps) {
+      instructions += '\n禁止让用户执行测试平台命令；可用的本地检查由执行者完成，并在策略要求时通过已配置的 runner 提交测试。'
+    }
     if (testing.enabled === false) {
       // 云端测试已按仓关闭：指引切换为本地直通
       instructions += `\n${testing.hint}`

@@ -1,6 +1,6 @@
 import { escapeHtml, formatDateTime, formatDuration, statusMeta, runLabel } from './model.js'
 
-const TABS = { report: '报告', checks: '检查项', timeline: '时间线', logs: '日志' }
+const TABS = { report: '报告', checks: '检查项', timeline: '时间线', diagnostics: '失败诊断', compare: '运行比较', pack: '证据包', logs: '日志' }
 const list = (value) => Array.isArray(value) ? value : []
 const valueText = (value) => value == null ? '未记录' : typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)
 const esc = (value) => escapeHtml(valueText(value))
@@ -127,7 +127,7 @@ export function createEvidenceDialog({ api, repo, taskId }) {
   let disposed = false, opened = false, generation = 0, logIntent = 0
   let round, nodes = [], selectedRun = null, selectedAttempt = null, activeTab = 'report', observedAt
   let triggerElement = null, focusScope = null, background = [], fallback = false
-  let logStates = new Map(), timelines = new Map(), tabScroll = new Map()
+  let logStates = new Map(), timelines = new Map(), diagnostics = new Map(), comparisons = new Map(), comparisonTargets = new Map(), diagnosticBusy = new Set(), diagnosticMessages = new Map(), experienceSubmitting = false, tabScroll = new Map()
   const preferences = new Map()
   const requests = new Map()
   const say = (text) => { find('.ct-dialog-live').textContent = text }
@@ -231,6 +231,148 @@ export function createEvidenceDialog({ api, repo, taskId }) {
           <details><summary>事件详情</summary>${details(step) || '<p>未记录详情。</p>'}</details>
           ${path ? `<button type="button" data-action="timeline-log" data-path="${esc(path)}" data-attempt="${esc(owner || '')}" data-artifact="${esc(evidence.artifactId || step.artifactId || '')}">看日志</button>` : ''}</article>`
       }).join('')}</section>`).join('')}`
+  }
+  function renderDiagnostics(data) {
+    const analysis = data.failureAnalysis || {}
+    const suggestions = list(data.suggestions)
+    const status = data.status || '未知'
+    panel('diagnostics').innerHTML = `<h3>失败诊断</h3><p class="ct-dialog-notice">运行级结果：${esc(status)} · 单元 ${esc(data.unit || '未记录')}:${esc(data.side || '未记录')} · 分类、建议和相似项仅基于本次运行及同仓已记录数据；未复核建议不会写入经验库。</p>
+      ${diagnosticMessages.get(selectedRun) ? `<p role="status">${esc(diagnosticMessages.get(selectedRun))}</p>` : ''}
+      ${analysis.hasFailure ? `<article class="ct-dialog-card"><h4>${esc(analysis.categoryZh || analysis.category || '失败原因未分类')}</h4>${fields([['失败阶段', data.phase || '未记录'], ['首错用例', analysis.firstCaseKey || '未记录'], ['终结原因', data.terminalReason || '未记录']])}<details><summary>失败摘要与依据</summary><pre>${esc(analysis.text || '未生成失败摘要')}</pre></details></article>` : `<p class="ct-dialog-notice">没有可用于诊断的失败检查项。运行状态为 ${esc(status)}；这不代表未执行项已通过。</p>`}
+      <h4>可执行建议</h4>${suggestions.map((suggestion) => {
+        const feedback = suggestion.feedback
+        const busy = diagnosticBusy.has(suggestion.suggestionId)
+        return `<article class="ct-dialog-card" data-diagnostic-suggestion="${esc(suggestion.suggestionId)}"><h4>${esc(suggestion.title)}</h4><p>${esc(suggestion.reason)}</p><p>${esc(suggestion.nextStep)}</p><details><summary>证据来源</summary><pre>${esc(suggestion.evidence)}</pre></details>
+          ${feedback ? `<p role="status">${feedback.action === 'confirm' ? '已确认建议' : '已忽略建议'} · ${esc(feedback.author || '未记录操作者')} · ${esc(timeText(feedback.createdAt))}${feedback.note ? ` · ${esc(feedback.note)}` : ''}</p>` : `<div class="ct-dialog-toolbar"><button type="button" data-action="diagnostic-feedback" data-suggestion-id="${esc(suggestion.suggestionId)}" data-feedback-action="confirm"${busy ? ' disabled' : ''}>${busy ? '正在提交…' : '确认建议'}</button><button type="button" data-action="diagnostic-feedback" data-suggestion-id="${esc(suggestion.suggestionId)}" data-feedback-action="ignore"${busy ? ' disabled' : ''}>忽略建议</button></div>`}</article>`
+      }).join('') || '<p class="ct-dialog-notice">没有建议可确认或忽略。</p>'}
+      <h4>相似失败</h4>${list(data.similarFailures).map((item) => `<article class="ct-dialog-card"><h4>${esc(item.case_key || '未记录用例')} · ${esc(item.failure_class || '未分类')}</h4><p>发生 ${esc(item.occurrence_count || 1)} 次 · ${esc(item.status || '未知状态')}</p><pre>${esc(item.error_signature || '无错误摘要')}</pre></article>`).join('') || '<p class="ct-dialog-notice">同仓暂无匹配的历史失败。</p>'}
+      <h4>已审核经验</h4>${list(data.similarExperiences).map((item) => `<article class="ct-dialog-card"><h4>${esc(item.title || '未命名经验')}</h4><p>${esc(item.content || '')}</p><p class="ct-dialog-notice">审核时间：${esc(timeText(item.reviewedAt))}</p></article>`).join('') || '<p class="ct-dialog-notice">同仓暂无匹配的已审核经验。</p>'}
+      ${analysis.hasFailure ? `<form data-experience-form class="ct-dialog-card"><h4>提交解决经验</h4><p class="ct-dialog-notice">提交后状态为“未验证”，经过人工审核后才会标记为已确认经验。</p><label class="ct-dialog-searchlabel">解决办法<textarea data-control="experience-resolution" maxlength="4000" required rows="4"></textarea></label><button type="submit"${experienceSubmitting ? ' disabled' : ''}>${experienceSubmitting ? '正在提交…' : '提交待审核反馈'}</button></form>` : ''}`
+  }
+  async function submitExperienceFeedback(event) {
+    event.preventDefault()
+    const data = diagnostics.get(selectedRun), input = panel('diagnostics').querySelector('[data-control="experience-resolution"]')
+    if (experienceSubmitting) return
+    if (!data || !input?.value.trim()) { say('请填写解决办法后再提交'); return }
+    const analysis = data.failureAnalysis || {}
+    const scope = { unit: data.unit, side: data.side, phase: data.phase, category: analysis.category || 'unknown', caseKey: analysis.firstCaseKey || null }
+    const evidence = { runId: data.runId, caseKey: analysis.firstCaseKey || null, terminalReason: data.terminalReason || null, source: 'stored_run_report' }
+    const feedback = {
+      repo: data.repo, runId: data.runId, failureId: data.similarFailures?.[0]?.failure_id || null,
+      sourceType: 'run', failureSummary: `${analysis.categoryZh || analysis.category || '失败'} · ${analysis.firstCaseKey || 'case 未记录'}`,
+      resolutionSummary: input.value.trim(), scope, evidence,
+    }
+    experienceSubmitting = true
+    renderDiagnostics(data)
+    const request = begin('experience-feedback'), run = selectedRun
+    try {
+      const response = checkedResponse(await api.submitExperienceFeedback(feedback, { signal: request.signal }))
+      if (!request.valid()) return
+      experienceSubmitting = false
+      diagnostics.delete(run)
+      diagnosticMessages.set(run, response.feedback?.verificationStatus === 'unverified' || response.feedback?.verification_status === 'unverified'
+        ? '解决经验已提交，当前为未验证状态，等待人工审核。' : '解决经验已提交，请在反馈清单查看审核状态。')
+      await loadDiagnostics()
+      say('未验证解决经验已提交')
+    } catch (error) {
+      if (!request.valid()) return
+      experienceSubmitting = false
+      diagnosticMessages.set(run, `解决经验未提交：${errorText(error)}`)
+      renderDiagnostics(data)
+      say('解决经验提交失败，未显示为已提交')
+    }
+  }
+  async function loadDiagnostics() {
+    if (!currentNode()) { panel('diagnostics').textContent = '本轮没有可查看的运行诊断。'; return }
+    if (diagnostics.has(selectedRun)) { renderDiagnostics(diagnostics.get(selectedRun)); return }
+    panel('diagnostics').textContent = '正在加载失败诊断…'
+    const request = begin('diagnostics'), run = selectedRun
+    try {
+      const data = checkedResponse(await api.getDiagnostics(run, { signal: request.signal }))
+      if (!request.valid()) return
+      assertOwnership(data, null, null)
+      diagnostics.set(run, data)
+      renderDiagnostics(data)
+      say('失败诊断已加载')
+    } catch (error) {
+      if (!request.valid()) return
+      panel('diagnostics').textContent = errorText(error)
+      say('失败诊断加载失败，原因已保留')
+    }
+  }
+  async function submitDiagnosticFeedback(button) {
+    const run = selectedRun, suggestionId = button.dataset.suggestionId, action = button.dataset.feedbackAction
+    diagnosticBusy.add(suggestionId)
+    diagnosticMessages.delete(run)
+    if (diagnostics.has(run)) renderDiagnostics(diagnostics.get(run))
+    const request = begin('diagnostic-feedback')
+    try {
+      await api.submitDiagnosticFeedback(run, suggestionId, { action, signal: request.signal })
+      if (!request.valid()) return
+      diagnostics.delete(run)
+      diagnosticBusy.delete(suggestionId)
+      diagnosticMessages.set(run, action === 'confirm' ? '建议确认已记录。' : '建议忽略已记录。')
+      await loadDiagnostics()
+      say(action === 'confirm' ? '建议确认已审计' : '建议忽略已审计')
+    } catch (error) {
+      if (!request.valid()) return
+      diagnosticBusy.delete(suggestionId)
+      diagnosticMessages.set(run, `反馈未记录：${errorText(error)}`)
+      if (diagnostics.has(run)) renderDiagnostics(diagnostics.get(run))
+      say('反馈写入失败，未显示为已记录')
+    }
+  }
+  function compareOptions() {
+    return list(round?.runs).filter((node) => node?.runId != null && String(node.runId) !== selectedRun)
+  }
+  function renderComparison(data, selectedId) {
+    const options = compareOptions()
+    const selector = `<label>对比运行<select data-control="compare-run" aria-label="对比基准运行">${options.map((node) => `<option value="${esc(node.runId)}"${String(node.runId) === String(selectedId) ? ' selected' : ''}>${esc(runLabel(node))} · ${esc(node.status || '未知')}</option>`).join('')}</select></label>`
+    if (!data) {
+      panel('compare').innerHTML = `<h3>运行比较</h3>${selector}<p class="ct-dialog-notice">${options.length ? '选择本正式轮中的另一运行以比较配置、用例集合、结果和耗时。' : '当前正式轮没有其他可比较的运行。'}</p>`
+      return
+    }
+    const labels = { suitePlanId: '套件计划', suiteLockSha256: '套件锁', requiredCaseSetSha256: '必需用例集', profileRevisionId: '执行配置', profileSha256: '执行配置摘要', runnerImageId: '运行镜像', imageManifestSha256: '镜像清单摘要', policyRevisionId: '策略版本', policySha256: '策略摘要' }
+    const configs = Object.entries(data.configuration || {}).map(([key, item]) => `<li>${esc(labels[key] || key)}：${esc(item.before || '未记录')} → ${esc(item.after || '未记录')} ${item.equal ? '（相同）' : '（变化/缺失）'}</li>`).join('') || '<li>冻结配置未记录。</li>'
+    const changes = list(data.statusChanges).map((item) => `<li>${esc(item.caseKey)}：${esc(item.before)} → ${esc(item.after)}</li>`).join('') || '<li>共同用例状态未变化，或缺少可比较用例。</li>'
+    const failures = (items) => list(items).map((item) => `<li>${esc(item.caseKey)} · ${esc(item.status)}${item.detail ? ` · ${esc(item.detail)}` : ''}</li>`).join('') || '<li>没有记录失败检查项。</li>'
+    panel('compare').innerHTML = `<h3>运行比较</h3>${selector}<p class="ct-dialog-notice">左侧 ${esc(data.left.runId)} → 右侧 ${esc(data.right.runId)}。先检查集合变化；只有配置、lane 和集合都一致时，整体结果与耗时才可直接比较。</p>
+      <article class="ct-dialog-card"><h4>${data.comparable ? '统计口径一致' : '当前结果不可直接比较'}</h4>${data.comparable ? '<p>冻结配置、执行 lane 和用例集合一致。</p>' : `<ul>${list(data.comparabilityReasons).map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul>`}
+      ${fields([['前次状态', data.left.status], ['本次状态', data.right.status], ['前次耗时', data.left.durationMs == null ? '未记录' : formatDuration(data.left.durationMs)], ['本次耗时', data.right.durationMs == null ? '未记录' : formatDuration(data.right.durationMs)], ['耗时变化', data.durationDeltaMs == null ? '未知' : `${data.durationDeltaMs > 0 ? '+' : ''}${formatDuration(Math.abs(data.durationDeltaMs))}`], ['共同检查项', `${data.denominator.common} / ${data.denominator.before} → ${data.denominator.after}`]])}</article>
+      <article class="ct-dialog-card"><h4>用例集合</h4><p>新增：${esc(data.caseSet.added.join('、') || '无')} · 移除：${esc(data.caseSet.removed.join('、') || '无')}</p><p>共同检查项：${esc(data.caseSet.common)}</p></article>
+      <article class="ct-dialog-card"><h4>冻结配置</h4><ul>${configs}</ul></article><article class="ct-dialog-card"><h4>共同用例状态变化</h4><ul>${changes}</ul></article>
+      <div class="ct-dialog-loglayout"><article class="ct-dialog-card"><h4>前次失败</h4><ul>${failures(data.failedChecks.before)}</ul></article><article class="ct-dialog-card"><h4>本次失败</h4><ul>${failures(data.failedChecks.after)}</ul></article></div>`
+  }
+  async function loadComparison() {
+    const options = compareOptions()
+    if (!options.length) { renderComparison(null, null); return }
+    const against = comparisonTargets.get(selectedRun) || String(options[0].runId)
+    comparisonTargets.set(selectedRun, against)
+    const key = `${selectedRun}\0${against}`
+    if (comparisons.has(key)) { renderComparison(comparisons.get(key), against); return }
+    renderComparison(null, against)
+    panel('compare').insertAdjacentHTML('beforeend', '<p>正在比较所选运行…</p>')
+    const request = begin('compare'), run = selectedRun
+    try {
+      const data = checkedResponse(await api.compareRuns(run, against, { signal: request.signal }))
+      if (!request.valid()) return
+      if (String(data?.left?.runId || '') !== run || String(data?.right?.runId || '') !== against) throw new Error('比较响应不属于当前所选的两个运行。')
+      assertOwnership(data, null, null)
+      comparisons.set(key, data)
+      renderComparison(data, against)
+      say('运行比较已加载')
+    } catch (error) {
+      if (!request.valid()) return
+      panel('compare').insertAdjacentHTML('beforeend', `<p role="status">${esc(errorText(error))}</p>`)
+      say('运行比较失败，原因已保留')
+    }
+  }
+  function renderEvidencePack() {
+    if (!currentNode()) { panel('pack').textContent = '本轮没有可导出的运行证据。'; return }
+    const url = `/api/testing/runs/${encodeURIComponent(selectedRun)}/evidence-pack`
+    panel('pack').innerHTML = `<h3>可复现证据包</h3><p class="ct-dialog-notice">导出包含脱敏运行摘要、冻结用例锁、检查结果、阶段日志摘要和制品哈希。不会包含源码、原始日志正文或制品归档。</p>
+      <article class="ct-dialog-card"><h4>所选运行</h4>${fields([['Run ID', selectedRun], ['状态', currentNode().status || '未记录'], ['单元', `${currentNode().unit || '未记录'}:${currentNode().side || '未记录'}`]])}
+      <a class="ct-dialog-download" href="${esc(url)}">下载证据包 ZIP</a><p class="ct-dialog-notice">下载后运行 <code>node scripts/verify-evidence-pack.mjs --file &lt;下载文件&gt;</code> 校验清单、每个文件的 SHA-256 和 ZIP 条目集合。</p></article>`
   }
   async function loadTimeline() {
     if (!currentNode()) { panel('timeline').textContent = '本轮没有可查看的运行时间线。'; return }
@@ -439,6 +581,9 @@ export function createEvidenceDialog({ api, repo, taskId }) {
     find('.ct-dialog-body').scrollTop = tabScroll.get(`${contextKey()}:${tab}`) || 0
     if (tab === 'checks') renderChecks()
     if (tab === 'timeline') await loadTimeline()
+    if (tab === 'diagnostics') await loadDiagnostics()
+    if (tab === 'compare') await loadComparison()
+    if (tab === 'pack') renderEvidencePack()
     if (tab === 'logs') await loadLogs()
   }
   function changeSelection(run, attempt) {
@@ -467,6 +612,7 @@ export function createEvidenceDialog({ api, repo, taskId }) {
     if (button.dataset.tab) { await setTab(button.dataset.tab); return }
     const action = button.dataset.action
     if (action === 'close') close()
+    if (action === 'diagnostic-feedback') { await submitDiagnosticFeedback(button); return }
     if (action === 'copy-submission') await copyText(round.submissionId, '提交标识已复制')
     if (action === 'copy-log' && logState().text != null) await copyText(logState().text, '已复制当前加载范围的日志文本')
     if (action === 'file') await selectFile(button.dataset.path)
@@ -497,8 +643,16 @@ export function createEvidenceDialog({ api, repo, taskId }) {
     await loadLogs(path)
   }
   on(dialog, 'click', (event) => { void handleClick(event) })
+  on(dialog, 'submit', (event) => {
+    if (event.target.matches('form[data-experience-form]')) void submitExperienceFeedback(event)
+  })
   on(dialog, 'change', (event) => {
     const control = event.target.dataset.control
+    if (control === 'compare-run') {
+      comparisonTargets.set(selectedRun, event.target.value)
+      comparisons.delete(`${selectedRun}\0${event.target.value}`)
+      void loadComparison()
+    }
     if (control === 'run' || control === 'attempt') {
       changeSelection(control === 'run' ? event.target.value : selectedRun, control === 'run' ? null : event.target.value)
       void setTab(activeTab)
@@ -577,7 +731,7 @@ export function createEvidenceDialog({ api, repo, taskId }) {
     if (selectedRun && !currentNode()) throw new Error('所选运行不属于传入的正式轮，已拒绝打开。')
     triggerElement = options.trigger || document.activeElement
     focusScope = triggerElement?.closest?.('.ct-panel, .ct-root, .gate-card, .task-detail') || null
-    logStates = new Map(); timelines = new Map(); tabScroll = new Map()
+    logStates = new Map(); timelines = new Map(); diagnostics = new Map(); comparisons = new Map(); comparisonTargets = new Map(); diagnosticBusy = new Set(); diagnosticMessages = new Map(); experienceSubmitting = false; tabScroll = new Map()
     for (const name of Object.keys(TABS)) panel(name).replaceChildren()
     renderHeader()
     renderReport()
@@ -602,7 +756,7 @@ export function createEvidenceDialog({ api, repo, taskId }) {
     for (const remove of listeners) remove()
     dialog.remove()
     style.remove()
-    logStates.clear(); timelines.clear(); preferences.clear(); tabScroll.clear()
+    logStates.clear(); timelines.clear(); diagnostics.clear(); comparisons.clear(); comparisonTargets.clear(); diagnosticBusy.clear(); diagnosticMessages.clear(); preferences.clear(); tabScroll.clear()
     triggerElement = null; focusScope = null; round = null; nodes = []
   }
   return { open, close, dispose }

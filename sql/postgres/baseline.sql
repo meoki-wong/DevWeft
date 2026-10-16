@@ -1,7 +1,7 @@
 -- sql/postgres/baseline.sql
--- 方案第 7 节：SQLite 全部迁移（v1–v36）跑完后的最终结构基线（含第 1–5 节列）。
+-- 方案第 7 节：SQLite 全部迁移（v1–v43）跑完后的最终结构基线（含第 1–5 节列）。
 -- 由 scripts/gen-postgres-baseline.mjs 生成；不要手工编辑 schema，变更后重新生成。
--- 布尔语义列落地为 SMALLINT 0/1（与 sqlite/应用层同构）。
+-- 布尔语义列落地为 SMALLINT 0/1（与 sqlite/应用层同构；导入不做类型转换）。
 -- 时间列保持 TEXT ISO，不改 timestamptz（§13.1）。
 -- tenant_id 为真正的 NOT NULL 列（SQLite 侧由触发器强制，此处落地列约束）。
 -- postgres_baseline 登记由 db/postgres-baseline.js 写入（版本 = MAX(非基线 version)+1，不在此硬编码）。
@@ -22,7 +22,7 @@ CREATE TABLE repositories (
   slug                TEXT NOT NULL UNIQUE,
   display_name        TEXT NOT NULL,
   default_target_ref  TEXT NOT NULL,
-  enabled             SMALLINT NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+  enabled             SMALLINT NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL
 );
@@ -74,7 +74,7 @@ CREATE TABLE git_remotes (
   url_fingerprint        TEXT NOT NULL UNIQUE,
   relationship           TEXT NOT NULL CHECK(relationship IN ('canonical','fork','mirror')),
   upstream_remote_id     TEXT REFERENCES git_remotes(remote_id),
-  enabled                SMALLINT NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+  enabled                SMALLINT NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
   created_at             TEXT NOT NULL
 );
 
@@ -218,36 +218,6 @@ CREATE TABLE test_submissions (
     REFERENCES test_bindings(repo_id, binding_id)
 );
 
-CREATE TABLE IF NOT EXISTS deferred_submissions (
-  deferred_id              TEXT PRIMARY KEY,
-  client_request_id        TEXT NOT NULL,
-  repo_id                  TEXT NOT NULL,
-  task_id                  TEXT NOT NULL,
-  author                   TEXT NOT NULL,
-  side                     TEXT NOT NULL,
-  side_reason              TEXT,
-  source_ref               TEXT,
-  code_commit_oid          TEXT,
-  code_diff                TEXT NOT NULL,
-  trigger_reason           TEXT,
-  product_fixed            BIGINT NOT NULL DEFAULT 0,
-  suite_fixed              BIGINT NOT NULL DEFAULT 0,
-  status                   TEXT NOT NULL DEFAULT 'pending'
-                             CHECK(status IN ('pending','claimed','processed','failed')),
-  claimed_by_worker        TEXT,
-  claimed_at               TEXT,
-  processed_submission_id  TEXT,
-  error_message            TEXT,
-  attempts                 BIGINT NOT NULL DEFAULT 0,
-  max_attempts             BIGINT NOT NULL DEFAULT 3,
-  next_retry_at            TEXT,
-  last_error_class         TEXT,
-  created_at               TEXT NOT NULL,
-  updated_at               TEXT NOT NULL,
-  UNIQUE(repo_id, client_request_id)
-);
-CREATE INDEX IF NOT EXISTS idx_deferred_status ON deferred_submissions(status, created_at);
-
 CREATE TABLE run_groups (
   run_group_id        TEXT PRIMARY KEY,
   repo_id             TEXT NOT NULL REFERENCES repositories(repo_id),
@@ -299,7 +269,8 @@ CREATE TABLE "test_runs" (
   started_at           TEXT,
   finished_at          TEXT,
   payload_json         TEXT,
-  steps_json           TEXT, coverage_complete BIGINT,
+  steps_json           TEXT,
+  coverage_complete    BIGINT,
   UNIQUE(repo_id, run_id),
   FOREIGN KEY(repo_id, run_group_id)
     REFERENCES run_groups(repo_id, run_group_id),
@@ -492,11 +463,6 @@ CREATE TABLE promotion_proposals (
     CHECK(state IN ('proposed','diffing','replaying','reviewing','merging','published','rejected')),
   structured_diff_json     TEXT,
   replay_summary_json      TEXT,
-  mr_provider              TEXT,
-  mr_project_id            TEXT,
-  mr_iid                   TEXT,
-  mr_url                   TEXT,
-  mr_state                 TEXT,
   published_revision_id    TEXT REFERENCES suite_revisions(suite_revision_id),
   published_at             TEXT,
   proposed_at              TEXT NOT NULL,
@@ -514,6 +480,31 @@ CREATE TABLE candidate_replay_runs (
   started_at            TEXT NOT NULL,
   finished_at           TEXT
 );
+
+CREATE TABLE deferred_submissions (
+          deferred_id              TEXT PRIMARY KEY,
+          client_request_id        TEXT NOT NULL,
+          repo_id                  TEXT NOT NULL,
+          task_id                  TEXT NOT NULL,
+          author                   TEXT NOT NULL,
+          side                     TEXT NOT NULL,
+          side_reason              TEXT,
+          source_ref               TEXT,
+          code_commit_oid          TEXT,
+          code_diff                TEXT NOT NULL,
+          trigger_reason           TEXT,
+          product_fixed            BIGINT NOT NULL DEFAULT 0,
+          suite_fixed              BIGINT NOT NULL DEFAULT 0,
+          status                   TEXT NOT NULL DEFAULT 'pending'
+                                     CHECK(status IN ('pending','claimed','processed','failed')),
+          claimed_by_worker        TEXT,
+          claimed_at               TEXT,
+          processed_submission_id  TEXT,
+          error_message            TEXT,
+          created_at               TEXT NOT NULL,
+          updated_at               TEXT NOT NULL, attempts BIGINT NOT NULL DEFAULT 0, max_attempts BIGINT NOT NULL DEFAULT 3, next_retry_at TEXT, last_error_class TEXT,
+          UNIQUE(repo_id, client_request_id)
+        );
 
 CREATE TABLE docs (
       id          BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -539,6 +530,28 @@ CREATE TABLE docs_versions (
       created_at     TEXT NOT NULL, tenant_id TEXT NOT NULL,
       UNIQUE(repo, name, version)
     );
+
+CREATE TABLE experience_feedback (
+  feedback_id        TEXT PRIMARY KEY,
+  repo_id            TEXT NOT NULL REFERENCES repositories(repo_id),
+  run_id             TEXT,
+  failure_id         TEXT,
+  experience_ref     TEXT,
+  author             TEXT,
+  source_type        TEXT NOT NULL CHECK(source_type IN ('run','manual','external')),
+  failure_summary    TEXT NOT NULL,
+  resolution_summary TEXT NOT NULL,
+  scope_json         TEXT NOT NULL,
+  evidence_json      TEXT NOT NULL,
+  verification_status TEXT NOT NULL DEFAULT 'unverified'
+                     CHECK(verification_status IN ('unverified','confirmed','rejected')),
+  created_at         TEXT NOT NULL,
+  reviewed_at        TEXT,
+  reviewed_by        TEXT,
+  review_note        TEXT,
+  CHECK(length(trim(failure_summary)) > 0),
+  CHECK(length(trim(resolution_summary)) > 0)
+);
 
 CREATE TABLE test_failures (
   failure_id           TEXT PRIMARY KEY,
@@ -706,6 +719,17 @@ CREATE TABLE legacy_task_mappings (
     REFERENCES task_instances(repo_id, task_instance_id)
 );
 
+CREATE TABLE links (
+  link_id     TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  base_url    TEXT NOT NULL,
+  sort_order  BIGINT NOT NULL DEFAULT 0,
+  is_primary  BIGINT NOT NULL DEFAULT 0,
+  enabled     SMALLINT NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
 CREATE TABLE platform_settings (
   key        TEXT PRIMARY KEY,
   value      TEXT NOT NULL,
@@ -749,6 +773,12 @@ CREATE TABLE principal_tokens (
   revoked_at    TEXT,
   created_at    TEXT NOT NULL,
   last_used_at  TEXT
+);
+
+CREATE TABLE project_links (
+  repo        TEXT PRIMARY KEY,
+  link_id     TEXT,
+  updated_at  TEXT NOT NULL
 );
 
 CREATE TABLE promotion_reviews (
@@ -958,7 +988,7 @@ CREATE TABLE suite_overlay_repo_compat (
   repo_id                TEXT NOT NULL REFERENCES repositories(repo_id),
   required_capabilities_json TEXT NOT NULL DEFAULT '[]',
   min_profile_revision   BIGINT,
-  enabled                SMALLINT NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+  enabled                SMALLINT NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
   PRIMARY KEY(overlay_id, repo_id)
 );
 
@@ -1120,7 +1150,6 @@ CREATE TABLE "test_specs" (
   acceptance_refs_json TEXT,
   pages_json      TEXT,
   mutation_verified SMALLINT NOT NULL DEFAULT 0,
-  mutation_verdict TEXT,
   reviewed_by     TEXT,
   reviewed_at     TEXT,
   review_decision TEXT,
@@ -1129,6 +1158,21 @@ CREATE TABLE "test_specs" (
   execution_config_json TEXT,
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL
+, mutation_verdict TEXT);
+
+CREATE TABLE tool_calls (
+  call_id        TEXT PRIMARY KEY,
+  repo           TEXT,
+  task_id        TEXT,
+  tool_name      TEXT,
+  phase          TEXT,
+  state          TEXT NOT NULL,
+  status         TEXT,
+  response_text  TEXT,
+  started_at     TEXT NOT NULL,
+  finished_at    TEXT,
+  served_by_link TEXT,
+  failover_from  TEXT
 );
 
 CREATE TABLE verify_reports (
@@ -1165,6 +1209,7 @@ CREATE INDEX idx_candidate_review_status
   ON candidate_binding_approvals(effective_approval, expires_at);
 CREATE INDEX idx_candidate_review_task
   ON candidate_binding_approvals(task_instance_id);
+CREATE INDEX idx_deferred_status ON deferred_submissions(status, created_at);
 CREATE INDEX idx_docs_category ON docs(category);
 CREATE INDEX idx_docs_repo ON docs(repo);
 CREATE INDEX idx_dv ON docs_versions(repo, name);
@@ -1174,6 +1219,12 @@ CREATE INDEX idx_exp_module ON experiences(module);
 CREATE INDEX idx_exp_repo ON experiences(repo);
 CREATE INDEX idx_exp_status ON experiences(status);
 CREATE INDEX idx_exp_task ON experiences(task_id);
+CREATE INDEX idx_experience_feedback_failure
+  ON experience_feedback(failure_id, created_at DESC);
+CREATE INDEX idx_experience_feedback_repo_status
+  ON experience_feedback(repo_id, verification_status, created_at DESC);
+CREATE INDEX idx_experience_feedback_run
+  ON experience_feedback(run_id, created_at DESC);
 CREATE INDEX idx_experience_pending_repo
   ON experience_pending(repo_id, status, created_at DESC);
 CREATE INDEX idx_failure_occurrences
@@ -1183,6 +1234,7 @@ CREATE INDEX idx_failures_fingerprint
 CREATE INDEX idx_git_remotes_repo ON git_remotes(repo_id, enabled);
 CREATE INDEX idx_gpd_repo ON gate_policy_decisions(repo_id, created_at);
 CREATE INDEX idx_gpd_task ON gate_policy_decisions(task_id, created_at);
+CREATE INDEX idx_links_sort ON links(sort_order, link_id);
 CREATE INDEX idx_promotion_review_proposal
   ON promotion_reviews(proposal_id, reviewed_at);
 CREATE INDEX idx_proposal_state
@@ -1223,9 +1275,11 @@ CREATE INDEX idx_tenant_extensions_active
 CREATE INDEX idx_test_specs_author ON "test_specs"(repo_id, author, updated_at DESC);
 CREATE INDEX idx_test_specs_demand ON "test_specs"(repo_id, demand_ref, created_at DESC);
 CREATE INDEX idx_test_specs_repo_feature ON "test_specs"(repo_id, feature_key, review_status);
+CREATE INDEX idx_tool_calls_task ON tool_calls(task_id, started_at);
 CREATE INDEX idx_tv ON task_versions(repo, task_id);
 CREATE INDEX idx_verify_level ON verify_reports(level);
 CREATE INDEX idx_verify_repo ON verify_reports(repo);
+CREATE UNIQUE INDEX links_one_primary ON links(is_primary) WHERE is_primary = 1;
 CREATE UNIQUE INDEX uq_active_failure_fingerprint
   ON test_failures(repo_id, fingerprint_version, fingerprint)
   WHERE status IN ('open','triaged');

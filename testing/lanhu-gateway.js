@@ -8,13 +8,14 @@
  * 白名单：仅设计类读取工具（PRD 组对当前租户无用、say_* 写类默认排除）。
  * 降级：远端不可达 → 明确报错 + 提示可暂用 IDE 侧直连兜底；连接缓存 TTL + 失效重建。
  *
- * 配置：AWP_LANHU_MCP_URL（默认 http://127.0.0.1:8000/mcp，设为 'off' 关闭）、
+ * 配置：AWP_LANHU_MCP_URL（默认 off，显式配置后才连接）、
  *       AWP_LANHU_MCP_ROLE（默认 Frontend）。
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { ExtensionError } from '../extensions/contracts.js'
 
-const DEFAULT_URL = 'http://127.0.0.1:8000/mcp'
+const DEFAULT_URL = 'off'
 const DEFAULT_ROLE = 'Frontend'
 const CLIENT_TTL_MS = 10 * 60_000
 const MAX_OUTPUT_CHARS = 60_000
@@ -35,7 +36,9 @@ export function lanhuConfigured() {
 }
 
 function lanhuBaseUrl() {
-  return String(process.env.AWP_LANHU_MCP_URL || DEFAULT_URL).trim()
+  const url = String(process.env.AWP_LANHU_MCP_URL || DEFAULT_URL).trim()
+  if (url === 'off') throw new ExtensionError('EXTENSION_OPERATION_UNSUPPORTED', 'No Lanhu DesignSource is configured')
+  return url
 }
 
 const clients = new Map() // username -> { client, at }
@@ -57,7 +60,7 @@ async function getClient(username, { timeoutMs = 8000 } = {}) {
   }
   const url = `${lanhuBaseUrl()}?role=${encodeURIComponent(String(process.env.AWP_LANHU_MCP_ROLE || DEFAULT_ROLE))}&name=${encodeURIComponent(key)}`
   const transport = new StreamableHTTPClientTransport(new URL(url))
-  const client = new Client({ name: 'agent-workflow-platform', version: '1.0.0' })
+  const client = new Client({ name: 'devweft', version: '0.1.0' })
   await client.connect(transport, { timeoutMs })
   clients.set(key, { client, at: Date.now() })
   return client
@@ -92,3 +95,16 @@ export async function lanhuCallTool(username, tool, args = {}, { timeoutMs = 45_
   if (truncated) out = out.slice(0, MAX_OUTPUT_CHARS) + '\n…[已截断：完整结果请缩小查询范围（单页/单区域）]'
   return { content: out, isError: Boolean(result?.isError), truncated, chars: out.length }
 }
+
+/** Provider seam; callers may inject a different DesignSource with the same listTools/callTool contract. */
+export const genericDesignSource = Object.freeze({
+  id: 'generic',
+  async listTools() { return [] },
+  async callTool() { throw new ExtensionError('EXTENSION_OPERATION_UNSUPPORTED', 'No design source is configured') },
+})
+
+export const lanhuDesignSource = Object.freeze({
+  id: 'lanhu-mcp',
+  listTools: lanhuListTools,
+  callTool: lanhuCallTool,
+})

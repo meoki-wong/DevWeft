@@ -59,6 +59,23 @@ export function createTestingApi({ repo, taskId, request = fetchJson }) {
     async getTimeline(runId, { signal } = {}) {
       return assertRun(await request(runPath(runId, 'timeline'), { signal }), runId)
     },
+    async getDiagnostics(runId, { signal } = {}) {
+      return assertRun(await request(runPath(runId, 'diagnostics'), { signal }), runId)
+    },
+    async compareRuns(runId, againstRunId, { signal } = {}) {
+      const path = `${runPath(runId, 'compare')}?${new URLSearchParams({ against: againstRunId })}`
+      return assertRun(await request(path, { signal }), runId)
+    },
+    async submitDiagnosticFeedback(runId, suggestionId, { action, note = '', signal } = {}) {
+      return assertRun(await request(`${runPath(runId, `diagnostics/${encodeURIComponent(suggestionId)}/feedback`)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, note, author: 'dashboard' }), signal,
+      }), runId)
+    },
+    async submitExperienceFeedback(feedback, { signal } = {}) {
+      return assertContext(await request('/api/testing/experience-feedback', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(feedback), signal,
+      }))
+    },
     logUrl,
     async requeue(runId, { signal } = {}) {
       return assertRun(await request(runPath(runId, 'requeue'), {

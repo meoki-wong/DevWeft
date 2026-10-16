@@ -6,12 +6,30 @@ import {
   releaseGuestIp,
   listGuestIpHolds,
   clearGuestIpPoolState,
+  parsePrivateIpv4Cidr24,
 } from '../runner/network/policy.mjs'
 
 describe('guest IP pool (parallel attempt isolation)', () => {
   beforeEach(() => {
     clearGuestIpPoolState()
   })
+
+  it('derives isolated addresses from an alternate private /24', () => {
+    const network = parsePrivateIpv4Cidr24('10.42.7.0/24')
+    expect(network).toMatchObject({
+      cidr: '10.42.7.0/24',
+      proxyIp: '10.42.7.1',
+      guestIp: '10.42.7.10',
+    })
+    expect(network.guestIpPool.slice(0, 2)).toEqual(['10.42.7.11', '10.42.7.12'])
+    expect(network.guestIpPool).toHaveLength(16)
+  })
+
+  it.each(['8.8.8.0/24', '192.168.4.1/24', '10.0.0.0/16', '172.32.1.0/24', '256.1.1.0/24']) (
+    'rejects invalid or non-private network %s', (cidr) => {
+      expect(() => parsePrivateIpv4Cidr24(cidr)).toThrow(/AWP_VM_NETWORK_CIDR/)
+    },
+  )
 
   it('pool excludes host proxy .1 and golden default .10', () => {
     expect(GUEST_IP_POOL).not.toContain('192.168.250.1')

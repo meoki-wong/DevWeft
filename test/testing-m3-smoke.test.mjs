@@ -22,6 +22,9 @@ import { parseViteLocalUrl, resolveSmokeScripts, runSmokeChecks } from '../runne
 import { evaluateNewGate, requiredUnitsForSize } from '../harness/testing-gate.js'
 import { utcNow } from '../testing/ids.js'
 
+process.env.AWP_REPO_PLATFORM_CONFIG = 'data/repo-platform.example.json'
+const WEB_SMOKE_PROFILE = { web: { build: ['build:development:web'], entry: 'index', outDir: 'web', readySelector: '#app' } }
+
 async function memdb() {
   const db = new Database(join(mkdtempSync(join(tmpdir(), 'awp-smoke-')), 't.db'))
   db.pragma('foreign_keys = ON')
@@ -49,7 +52,7 @@ async function insertTask(db, boot, taskId, size, type = 'FEATURE') {
      VALUES (?, ?, ?, ?)`
   ).run(boot.repoId, taskId, taskInstanceId, now)
   // 同步 harness tasks 行：submissions/门禁判定的 type 以服务端 tasks 表为准（防 AI 虚报体量）
-  await db.prepare('INSERT INTO tasks(task_id, repo, size, type) VALUES (?, ?, ?, ?)').run(taskId, 'demo-app', size, type)
+  await db.prepare('INSERT INTO tasks(task_id, repo, size, type) VALUES (?, ?, ?, ?)').run(taskId, 'example-app', size, type)
   return taskInstanceId
 }
 
@@ -77,7 +80,6 @@ async function submit(db, boot, blobs, blobDir, { taskId, size, type = 'FEATURE'
       targetRemoteId: boot.remoteId,
       targetRef: 'refs/heads/stage',
       targetCommitOid: OID,
-      mr: null,
     },
     bundle: { sha256: sha, size: payload.length },
     suiteRequest: { mode: 'auto', candidateRevisionIds: [], candidateApprovalIds: [] },
@@ -139,6 +141,7 @@ describe('M3.5 smoke suite cases and required units', () => {
   it('repository overlay declares configured smoke cases and the plan includes them', async () => {
     const db = await memdb()
     const boot = await bootstrapTestingPlatform(db, {
+      slug: 'example-app',
       remoteUrl: 'https://gitlab.example/Web/demo-app.git', rotateToken: true,
     })
     const now = utcNow()
@@ -160,11 +163,10 @@ describe('M3.5 smoke suite cases and required units', () => {
       requestedSides: 'auto',
     })
     expect([...preview.requiredCaseKeys].sort()).toEqual([
-      'test:smoke/web',
       'test:smoke/admin',
+      'test:smoke/web',
       'test:static/eslint',
       'test:static/hard-rules',
-      'test:static/translation-fixture',
       'test:static/vitest',
     ])
   })
@@ -172,6 +174,7 @@ describe('M3.5 smoke suite cases and required units', () => {
   it('M tasks produce runs by type (UI 类追加 smoke，FIX 类仅静态); S tasks stay static only', async () => {
     const db = await memdb()
     const boot = await bootstrapTestingPlatform(db, {
+      slug: 'example-app',
       remoteUrl: 'https://gitlab.example/Web/demo-app.git', rotateToken: true,
     })
     const blobDir = mkdtempSync(join(tmpdir(), 'awp-smokeblob-'))
@@ -179,7 +182,7 @@ describe('M3.5 smoke suite cases and required units', () => {
     expect(requiredUnitsForSize('M', ['web', 'admin'])).toEqual(['static:na', 'smoke:web', 'smoke:admin'])
     const m = await submit(db, boot, blobs, blobDir, { taskId: 'T-M1', size: 'M' })
     const runs = await db.prepare('SELECT unit, side, status FROM test_runs WHERE run_group_id=? ORDER BY unit, side').all(m.formalRunGroupId)
-    expect(runs.map((r) => `${r.unit}:${r.side}`).sort()).toEqual(['smoke:web', 'smoke:admin', 'static:na'])
+    expect(runs.map((r) => `${r.unit}:${r.side}`).sort()).toEqual(['smoke:admin', 'smoke:web', 'static:na'])
     // 纯逻辑/接口改动（FIX）不跑 e2e（防过量测试）
     const fix = await submit(db, boot, blobs, blobDir, { taskId: 'T-MF1', size: 'M', type: 'FIX' })
     const fixRuns = await db.prepare('SELECT unit, side FROM test_runs WHERE run_group_id=?').all(fix.formalRunGroupId)
@@ -207,6 +210,7 @@ describe('M3.5 guest unit dispatch', () => {
   it('static runs ignore smoke cases; smoke runs execute only their side via the injected executor', async () => {
     const db = await memdb()
     const boot = await bootstrapTestingPlatform(db, {
+      slug: 'example-app',
       remoteUrl: 'https://gitlab.example/Web/demo-app.git', rotateToken: true,
     })
     const blobDir = mkdtempSync(join(tmpdir(), 'awp-smokeblob2-'))
@@ -273,6 +277,8 @@ describe('M3.5 smoke executor primitives', () => {
         'build:development:web': 'node --version',
       },
     }))
+    mkdirSync(join(ws, 'dist', 'web'), { recursive: true })
+    writeFileSync(join(ws, 'dist', 'web', 'index.html'), '<main id="app">ok</main>')
     mkdirSync(join(ws, 'fixtures'), { recursive: true })
     writeFileSync(join(ws, 'fixtures', 'i18n.json'), JSON.stringify({
       schemaVersion: 1, kind: 'translation-fixture',
@@ -310,6 +316,7 @@ describe('M3.5 smoke executor primitives', () => {
       workspaceDir: ws,
       cases: [{ caseKey: 'test:smoke/web' }],
       side: 'web',
+      smokeScripts: WEB_SMOKE_PROFILE,
       playwrightModule: 'file://' + fakePlaywright.replace(/\\/g, '/'),
       previewCommand: ['node', join(ws, 'fake-preview.cjs')],
       serveReadyTimeoutMs: 15000,
@@ -333,11 +340,14 @@ describe('M3.5 smoke executor primitives', () => {
         'serve:web': 'node -e "console.log(\'  ➜  Local:   http://127.0.0.1:5198/\'); setTimeout(()=>process.exit(0), 8000)"',
       },
     }))
+    mkdirSync(join(ws, 'dist', 'web'), { recursive: true })
+    writeFileSync(join(ws, 'dist', 'web', 'index.html'), '<main id="app">ok</main>')
     writeFileSync(join(ws, 'fake-preview2.cjs'), "console.log('  ➜  Local:   http://127.0.0.1:5197/'); setTimeout(()=>process.exit(0), 8000)")
     const checks = await runSmokeChecks({
       workspaceDir: ws,
       cases: [{ caseKey: 'test:smoke/web' }],
       side: 'web',
+      smokeScripts: WEB_SMOKE_PROFILE,
       previewCommand: ['node', join(ws, 'fake-preview2.cjs')],
       playwrightModule: 'awp-definitely-not-installed',
       serveReadyTimeoutMs: 15000,
@@ -352,6 +362,7 @@ describe('M3.5 M-size gate closes end to end', () => {
   it('three unit runs all pass and the M gate would not block', async () => {
     const db = await memdb()
     const boot = await bootstrapTestingPlatform(db, {
+      slug: 'example-app',
       remoteUrl: 'https://gitlab.example/Web/demo-app.git', rotateToken: true,
     })
     const blobDir = mkdtempSync(join(tmpdir(), 'awp-smokeblob3-'))
@@ -373,7 +384,7 @@ describe('M3.5 M-size gate closes end to end', () => {
     const group = await db.prepare('SELECT status FROM run_groups WHERE run_group_id=?').get(created.formalRunGroupId)
     expect(group.status).toBe('passed')
     const evaluation = await evaluateNewGate(db, {
-      repoSlug: 'demo-app',
+      repoSlug: 'example-app',
       taskId: 'T-M3',
       size: 'M',
       gateBindingId: created.bindingId,

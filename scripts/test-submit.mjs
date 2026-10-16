@@ -275,7 +275,6 @@ try {
             targetRemoteId,
             targetRef,
             targetCommitOid: targetOid,
-            mr: null,
           },
           bundle: { sha256: snap.bundleSha256, size: snap.bundleSize },
           suiteRequest: { mode: 'auto', candidateRevisionIds: [], candidateApprovalIds: [] },

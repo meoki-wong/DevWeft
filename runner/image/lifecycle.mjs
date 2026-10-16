@@ -28,11 +28,14 @@ export async function publishImage(db, {
   if (await db.prepare('SELECT 1 FROM runner_images WHERE image_id=?').get(imageId)) {
     throw new ApiError('IMAGE_CHANGED')
   }
-  await db.prepare(
-    `INSERT INTO runner_images(image_id, manifest_sha256, vhdx_sha256, manifest_json, state, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(imageId, manifestSha256, vhdxSha256, manifestJson, mode, now)
-  if (mode === 'active') await retireCurrentActive(db, imageId, now)
+  const tx = async (txDb) => {
+    await txDb.prepare(
+      `INSERT INTO runner_images(image_id, manifest_sha256, vhdx_sha256, manifest_json, state, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(imageId, manifestSha256, vhdxSha256, manifestJson, mode, now)
+    if (mode === 'active') await retireCurrentActive(txDb, imageId, now)
+  }
+  await db.tx(tx)
   return await db.prepare('SELECT * FROM runner_images WHERE image_id=?').get(imageId)
 }
 

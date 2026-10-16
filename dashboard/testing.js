@@ -18,6 +18,11 @@ import { readZipCentralEntries } from '../scanner/zipscan.mjs'
 import { recordAuditEvent } from '../audit/index.js'
 import { setRepoGateMode, GATE_MODES, isCloudTestingEnabled, getRepoGateMode } from '../harness/testing-gate.js'
 import { buildTimeline, buildSummary, buildFailureAnalysis } from '../testing/report-timeline.js'
+import { getRunDiagnostics, validateDiagnosticFeedback } from '../testing/diagnostics.js'
+import { compareTestRuns } from '../testing/compare-runs.js'
+import { buildRunEvidencePack } from '../testing/evidence-pack.js'
+import { createExperienceFeedback, listExperienceFeedback, reviewExperienceFeedback } from '../testing/experience-feedback.js'
+import { buildTestingTrends } from '../testing/trends.js'
 import {
   listRepoEnvAccounts,
   setRepoEnvAccount,
@@ -806,6 +811,24 @@ export function mountTestingDashboard(app) {
     }
   })
 
+  app.get('/api/testing/trends', async (req, res) => {
+    try {
+      const repoSlug = String(req.query.repo || DEFAULT_REPO)
+      if (repoSlug === 'all') return err400(res, '趋势查询需要指定单个 repo')
+      const repoId = await normalizeRepoId(repoSlug)
+      const days = Math.min(366, Math.max(1, Number(req.query.days) || 30))
+      const from = req.query.from ? `${String(req.query.from)}T00:00:00.000Z` : new Date(Date.now() - days * 86400000).toISOString()
+      const to = req.query.to
+        ? new Date(Date.parse(`${String(req.query.to)}T00:00:00.000Z`) + 86400000).toISOString()
+        : new Date(Date.now() + 1).toISOString()
+      const result = await buildTestingTrends(db, {
+        repoId, from, to, bucket: req.query.bucket || (days > 90 ? 'week' : 'day'),
+        unit: req.query.unit || null, side: req.query.side || null,
+      })
+      res.json({ ...result, repo: repoSlug })
+    } catch (e) { err400(res, e.message) }
+  })
+
   // 考卷 scope：task ↔ regression（决定是否始终注入）
   app.post('/api/testing/specs/scope', async (req, res) => {
     const { repo, featureKey, scope, author } = req.body || {}
@@ -1054,6 +1077,45 @@ export function mountTestingDashboard(app) {
     }
   })
 
+  app.get('/api/testing/experience-feedback', async (req, res) => {
+    try {
+      const repoId = await normalizeRepoId(req.query.repo || '')
+      res.json({ ok: true, items: await listExperienceFeedback(db, { repoId, status: req.query.status || null, limit: req.query.limit }) })
+    } catch (e) { err400(res, e.message) }
+  })
+
+  app.post('/api/testing/experience-feedback', async (req, res) => {
+    try {
+      const body = req.body || {}
+      const repoId = await normalizeRepoId(body.repo || '')
+      const feedback = await createExperienceFeedback(db, { ...body, repoId })
+      const repo = await db.prepare('SELECT slug FROM repositories WHERE repo_id=?').get(repoId)
+      const audit = await recordAuditEvent({
+        eventType: 'testing_experience_feedback_submitted', method: 'POST', toolName: 'experience_feedback',
+        author: feedback.author || body.author || 'dashboard', repo: repo?.slug || body.repo,
+        runId: feedback.runId, status: 'unverified', detail: `experience feedback submitted: ${feedback.feedbackId}`,
+        payload: { feedbackId: feedback.feedbackId, failureId: feedback.failureId, sourceType: feedback.sourceType },
+      })
+      res.status(201).json({ ok: true, feedback, auditRecorded: Boolean(audit), auditId: audit?.id || null })
+    } catch (e) { err400(res, e.message) }
+  })
+
+  app.post('/api/testing/experience-feedback/:feedbackId/review', async (req, res) => {
+    try {
+      const { action, reviewer = 'reviewer', note = '' } = req.body || {}
+      const feedback = await reviewExperienceFeedback(db, { feedbackId: req.params.feedbackId, action, reviewer, note })
+      if (!feedback) return err404(res, '反馈不存在')
+      const repo = await db.prepare('SELECT slug FROM repositories WHERE repo_id=?').get(feedback.repo_id)
+      const audit = await recordAuditEvent({
+        eventType: 'testing_experience_feedback_reviewed', method: 'POST', toolName: 'experience_feedback_review',
+        author: reviewer, repo: repo?.slug || feedback.repo_id, runId: feedback.run_id,
+        status: feedback.verification_status, detail: `experience feedback ${action}: ${feedback.feedback_id}`,
+        payload: { feedbackId: feedback.feedback_id, failureId: feedback.failure_id, action, note },
+      })
+      res.json({ ok: true, feedback, auditRecorded: Boolean(audit), auditId: audit?.id || null })
+    } catch (e) { err400(res, e.message) }
+  })
+
   // 资产清单（支持 repo/author/demand/status/hint 过滤，按 feature_key 分组最新版 + history）
   app.get('/api/testing/specs', async (req, res) => {
     const repo = req.query.repo || DEFAULT_REPO
@@ -1253,6 +1315,67 @@ export function mountTestingDashboard(app) {
       failureAnalysis: failure,
       steps: timeline,
     })
+  })
+
+  // 失败诊断只读运行证据与本仓已审核经验；建议确认/忽略写入 append-only 审计事件。
+  app.get('/api/testing/runs/:runId/diagnostics', async (req, res) => {
+    try {
+      const diagnostics = await getRunDiagnostics(db, req.params.runId)
+      if (!diagnostics) return err404(res, '运行不存在')
+      res.json(diagnostics)
+    } catch (e) { err400(res, e.message) }
+  })
+
+  app.post('/api/testing/runs/:runId/diagnostics/:suggestionId/feedback', async (req, res) => {
+    try {
+      const { action, note = '', author = 'dashboard' } = req.body || {}
+      const input = validateDiagnosticFeedback(action, note)
+      if (!input.ok) return err400(res, input.error)
+      const diagnostics = await getRunDiagnostics(db, req.params.runId)
+      if (!diagnostics) return err404(res, '运行不存在')
+      const suggestion = diagnostics.suggestions.find((item) => item.suggestionId === req.params.suggestionId)
+      if (!suggestion) return err400(res, '建议不存在或不属于该运行')
+      const event = await recordAuditEvent({
+        eventType: 'testing_diagnostic_feedback',
+        toolName: 'testing_diagnostic_feedback',
+        method: 'POST',
+        author: String(author).slice(0, 120),
+        repo: diagnostics.repo,
+        taskId: null,
+        runId: diagnostics.runId,
+        status: action,
+        detail: `diagnostic suggestion ${action}: ${suggestion.action}`,
+        payload: {
+          suggestionId: suggestion.suggestionId,
+          action,
+          suggestionAction: suggestion.action,
+          category: suggestion.category,
+          note: input.note,
+        },
+      })
+      if (!event) return res.status(503).json({ error: '诊断反馈审计写入失败' })
+      res.json({ ok: true, runId: diagnostics.runId, suggestionId: suggestion.suggestionId, action, auditId: event.id })
+    } catch (e) { err400(res, e.message) }
+  })
+
+  app.get('/api/testing/runs/:runId/compare', async (req, res) => {
+    try {
+      const result = await compareTestRuns(db, req.params.runId, String(req.query.against || ''))
+      if (result.error) return res.status(result.status || 400).json({ error: result.error })
+      res.json(result)
+    } catch (e) { err400(res, e.message) }
+  })
+
+  app.get('/api/testing/runs/:runId/evidence-pack', async (req, res) => {
+    try {
+      const pack = await buildRunEvidencePack(db, req.params.runId)
+      if (!pack) return err404(res, '运行不存在')
+      res.setHeader('Content-Type', 'application/zip')
+      res.setHeader('Content-Length', String(pack.archive.length))
+      res.setHeader('Content-Disposition', `attachment; filename="${pack.fileName}"`)
+      res.setHeader('X-Evidence-SHA256', pack.sha256)
+      res.send(pack.archive)
+    } catch (e) { err400(res, e.message) }
   })
 
   // 日志文件清单

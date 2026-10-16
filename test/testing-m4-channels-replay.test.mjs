@@ -1,4 +1,4 @@
-/** M4-C: channels + replay-runner + mr-client 测试 */
+/** M4-C: channels + replay-runner tests */
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,7 +9,6 @@ import { describe, expect, it } from 'vitest'
 import { runTestingMigrations } from '../testing/migrate.js'
 import { publishToChannel, getActiveChannel, listChannels } from '../testing/channels.js'
 import { runReplay, MockReplayRunner } from '../testing/replay-runner.js'
-import { MockMRClient, openProposalMR, syncProposalMRState, mergeProposalMR } from '../testing/mr-client.js'
 import { createProposal, transitionProposal } from '../testing/promotion.js'
 import { ApiError } from '../testing/errors.js'
 
@@ -104,39 +103,6 @@ describe('M4-C: replay-runner state machine', () => {
     const db = await memdb()
     await createProposal(db, { proposalId: 'pp1', repoId: 'r1', targetSuiteRevisionId: 'sr2', baseSuiteRevisionId: 'sr1' }, { authorPrincipalId: 'p1' })
     await expect(runReplay(db, { proposalId: 'pp1', businessSnapshotId: 'bs1', runner: null })).rejects.toThrow(/INVALID_SCHEMA/)
-  })
-})
-
-describe('M4-C: MR integration (MockMRClient)', () => {
-  it('openProposalMR persists mr_id and state', async () => {
-    const db = await memdb()
-    const mc = new MockMRClient()
-    await createProposal(db, { proposalId: 'pp1', repoId: 'r1', targetSuiteRevisionId: 'sr2', baseSuiteRevisionId: 'sr1' }, { authorPrincipalId: 'p1' })
-    const mr = await openProposalMR(mc, db, { proposalId: 'pp1', sourceBranch: 'feat/x', targetBranch: 'main', title: 't', body: 'b', repoId: 'r1' })
-    expect(mr.state).toBe('opened')
-    const row = await db.prepare("SELECT mr_state, mr_iid, mr_url FROM promotion_proposals WHERE proposal_id='pp1'").get()
-    expect(row.mr_state).toBe('opened')
-    expect(row.mr_iid).toBe('1')
-    expect(row.mr_url).toContain('r1/mr/1')
-  })
-  it('syncProposalMRState syncs state from MR client', async () => {
-    const db = await memdb()
-    const mc = new MockMRClient()
-    await createProposal(db, { proposalId: 'pp1', repoId: 'r1', targetSuiteRevisionId: 'sr2', baseSuiteRevisionId: 'sr1' }, { authorPrincipalId: 'p1' })
-    const mr = await openProposalMR(mc, db, { proposalId: 'pp1', sourceBranch: 'feat/x', targetBranch: 'main', title: 't', body: 'b', repoId: 'r1' })
-    mc.setState(`r1:1`, 'mergeable')
-    const s = await syncProposalMRState(mc, db, { proposalId: 'pp1', mrKey: 'r1:1' })
-    expect(s.state).toBe('mergeable')
-    expect((await db.prepare("SELECT mr_state FROM promotion_proposals WHERE proposal_id='pp1'").get()).mr_state).toBe('mergeable')
-  })
-  it('mergeProposalMR flips state to merged', async () => {
-    const db = await memdb()
-    const mc = new MockMRClient()
-    await createProposal(db, { proposalId: 'pp1', repoId: 'r1', targetSuiteRevisionId: 'sr2', baseSuiteRevisionId: 'sr1' }, { authorPrincipalId: 'p1' })
-    await openProposalMR(mc, db, { proposalId: 'pp1', sourceBranch: 'feat/x', targetBranch: 'main', title: 't', body: 'b', repoId: 'r1' })
-    const m = await mergeProposalMR(mc, db, { proposalId: 'pp1', mrKey: 'r1:1' })
-    expect(m.state).toBe('merged')
-    expect((await db.prepare("SELECT mr_state FROM promotion_proposals WHERE proposal_id='pp1'").get()).mr_state).toBe('merged')
   })
   it('AbstractReplayRunner base class throws', async () => {
     const db = await memdb()

@@ -174,7 +174,7 @@ function registerTaskState(server) {
     {
       title: '任务状态读写（团队共享 / Harness 兼容入口）',
       description:
-        '团队共享任务库读写。编码工作流请优先精确调用 harness_start / harness_status（与本工具同属 MCP awp-ai）。' +
+        '共享任务库读写。对 DevWeft 跟踪的任务，优先调用 harness_start / harness_status。' +
         'action: open 开启新任务（内部走 harness_start）/ update 合并更新 / close 关闭 / get 查询 / list 列出进行中任务。' +
         '若 IDE 工具列表搜不到 harness_start，可先调本工具 action=open 建立 Harness 会话。',
       inputSchema: {

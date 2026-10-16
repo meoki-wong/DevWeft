@@ -43,7 +43,7 @@ export function remoteUrlFingerprint(canonicalUrl) {
 export async function registerRemote(db, {
   repoId,
   url,
-  provider = 'gitlab',
+  provider = 'generic',
   providerInstance,
   providerProjectId = null,
   relationship = 'canonical',
@@ -104,3 +104,11 @@ export async function resolveGitContext(db, body) {
     ],
   }
 }
+
+/** Default Git provider seam: generic Git transports use canonical URL identity and the existing ref checks. */
+export const genericGitProvider = Object.freeze({
+  id: 'generic',
+  canonicalizeRemoteUrl,
+  remoteUrlFingerprint,
+  resolveContext: resolveGitContext,
+})

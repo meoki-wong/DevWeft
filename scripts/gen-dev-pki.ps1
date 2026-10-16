@@ -1,4 +1,4 @@
-﻿# 生成 secret-broker mTLS 证书。Windows PowerShell 5.1 不能导出 PKCS#8，改走 Node 22。
+﻿# 生成 secret-broker mTLS 证书。Windows PowerShell 5.1 不能导出 PKCS#8，改走受支持的 Node 运行时。
 param(
   [string]$OutDir = ""
 )

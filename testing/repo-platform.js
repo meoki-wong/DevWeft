@@ -10,7 +10,7 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const CONFIG_PATH = join(REPO_ROOT, 'data', 'repo-platform.json')
+const DEFAULT_CONFIG_PATH = join(REPO_ROOT, 'data', 'repo-platform.json')
 
 export const DEFAULT_REPO = process.env.AWP_DEFAULT_REPO || 'demo-app'
 export const BUILTIN_PROFILES = Object.freeze({})
@@ -58,17 +58,20 @@ function normalizeProfile(slug, cfg) {
   }
 }
 
-function loadFileProfiles() {
-  if (!existsSync(CONFIG_PATH)) return {}
+function loadFileProfiles(env = process.env) {
+  const configPath = env.AWP_REPO_PLATFORM_CONFIG
+    ? resolve(REPO_ROOT, env.AWP_REPO_PLATFORM_CONFIG)
+    : DEFAULT_CONFIG_PATH
+  if (!existsSync(configPath)) return {}
   let raw
   try {
-    raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
+    raw = JSON.parse(readFileSync(configPath, 'utf8'))
   } catch (error) {
-    throw new Error(`Invalid JSON in ${CONFIG_PATH}: ${error.message}`)
+    throw new Error(`Invalid JSON in ${configPath}: ${error.message}`)
   }
   const repos = raw?.repos && typeof raw.repos === 'object' ? raw.repos : raw
   if (!repos || typeof repos !== 'object' || Array.isArray(repos)) {
-    throw new Error(`${CONFIG_PATH} must contain an object or a {"repos": {...}} object`)
+    throw new Error(`${configPath} must contain an object or a {"repos": {...}} object`)
   }
   return Object.fromEntries(
     Object.entries(repos)
@@ -80,7 +83,7 @@ function loadFileProfiles() {
 export function getRepoPlatformProfile(slug, { env = process.env } = {}) {
   const key = String(slug || '').trim()
   if (!key) return null
-  const configured = loadFileProfiles()[key]
+  const configured = loadFileProfiles(env)[key]
   if (configured) return configured
   const workspaceEnv = slugEnvKey(key)
   if (env[workspaceEnv]) {
@@ -130,7 +133,7 @@ export function getCasePrefix(slug, { env = process.env } = {}) {
 }
 
 export function listPlatformRepos(env = process.env) {
-  const slugs = new Set(Object.keys(loadFileProfiles()))
+  const slugs = new Set(Object.keys(loadFileProfiles(env)))
   for (const key of Object.keys(env)) {
     if (key.startsWith('AWP_REPO_PATH_') && env[key]) slugs.add(`(env:${key})`)
   }
@@ -140,12 +143,16 @@ export function listPlatformRepos(env = process.env) {
 export function examplePlatformConfig() {
   return {
     repos: {
-      'demo-app': {
-        workspaceEnv: 'AWP_REPO_PATH_DEMO_APP',
-        casePrefix: 'demo-app',
-        suiteSlug: 'demo-app',
-        defaultSides: [],
-        smoke: {},
+      'example-app': {
+        workspaceEnv: 'AWP_REPO_PATH_EXAMPLE_APP',
+        workspacePath: 'examples/example-app',
+        casePrefix: 'example-app',
+        suiteSlug: 'example-app',
+        defaultSides: ['web', 'admin'],
+        smoke: {
+          web: { build: ['build:web'], entry: 'index', outDir: 'web', readySelector: '[data-test="app"]' },
+          admin: { build: ['build:admin'], entry: 'index', outDir: 'admin', readySelector: '[data-test="app"]' },
+        },
         enabled: true,
       },
     },

@@ -30,6 +30,14 @@ const fakeApi = (extra = {}) => ({
   getLogs: vi.fn(async (runId, { artifactId } = {}) => pkg(artifactId || `a-${runId}`)),
   getLog: vi.fn(async (runId, path, { artifactId } = {}) => textFile(path, `正文 ${runId} ${path}`, artifactId || `a-${runId}`)),
   getTimeline: vi.fn(async () => ({ steps: [], summary: null, failureAnalysis: null, source: 'mixed' })),
+  getDiagnostics: vi.fn(async (runId) => ({ ok: true, runId, status: 'failed', unit: 'smoke', side: 'web', phase: 'smoke',
+    failureAnalysis: { hasFailure: false }, suggestions: [], similarFailures: [], similarExperiences: [] })),
+  submitDiagnosticFeedback: vi.fn(async (runId, suggestionId, { action }) => ({ ok: true, runId, suggestionId, action })),
+  compareRuns: vi.fn(async (runId, againstRunId) => ({ ok: true, comparable: false,
+    left: { runId, status: 'failed', durationMs: null }, right: { runId: againstRunId, status: 'passed', durationMs: 10 },
+    comparabilityReasons: ['检查项集合发生变化'], configuration: {}, caseSet: { added: [], removed: [], common: 0 },
+    statusChanges: [], failedChecks: { before: [], after: [] }, durationDeltaMs: null, denominator: { common: 0, before: 0, after: 0 } })),
+  submitExperienceFeedback: vi.fn(async (feedback) => ({ ok: true, feedback: { ...feedback, verificationStatus: 'unverified' } })),
   logUrl: vi.fn((runId, path, { artifactId } = {}) => `https://evidence.invalid/${encodeURIComponent(runId)}/log?${new URLSearchParams({ path, ...(artifactId ? { artifactId } : {}) })}`),
   ...extra,
 })
@@ -501,6 +509,69 @@ describe('时间线：来源、时区、详情与日志导航', () => {
     await opening
     expect(content('timeline')).toContain('运行二事件')
     expect(content('timeline')).not.toContain('运行一旧事件')
+  })
+})
+
+describe('失败诊断：证据、建议与审计反馈', () => {
+  it('展示运行级诊断，并在确认建议后等待审计回执再刷新', async () => {
+    const suggestion = { suggestionId: 'sug-1', action: 'inspect-product', title: '定位产品失败', category: 'product',
+      reason: '产品缺陷', nextStep: '核对接口返回', evidence: { runId: 'r1', source: 'stored_run_report' }, feedback: null }
+    const diagnostics = {
+      ok: true, runId: 'r1', status: 'failed', unit: 'smoke', side: 'web', phase: 'smoke', terminalReason: 'assertion_failed',
+      failureAnalysis: { hasFailure: true, category: 'product', categoryZh: '产品缺陷', firstCaseKey: 'test:spec/order', text: '首错用例：test:spec/order' },
+      suggestions: [suggestion], similarFailures: [{ case_key: 'test:spec/order', failure_class: 'product', occurrence_count: 2, status: 'open', error_signature: 'status 400' }],
+      similarExperiences: [{ experienceId: 'exp-1', title: '处理状态码错误', content: '核对响应断言', reviewedAt: AT }],
+    }
+    const confirmed = { ...diagnostics, suggestions: [{ ...suggestion, feedback: { action: 'confirm', author: 'dashboard', createdAt: AT } }] }
+    const api = fakeApi({
+      getDiagnostics: vi.fn().mockResolvedValueOnce(diagnostics).mockResolvedValueOnce(confirmed),
+      submitDiagnosticFeedback: vi.fn(async () => ({ ok: true })),
+    })
+    await open({ tab: 'diagnostics' }, api)
+    expect(content('diagnostics')).toContain('失败阶段')
+    expect(content('diagnostics')).toContain('status 400')
+    expect(content('diagnostics')).toContain('处理状态码错误')
+    expect(content('diagnostics')).toContain('确认建议')
+    await click('[data-action="diagnostic-feedback"][data-feedback-action="confirm"]')
+    expect(api.submitDiagnosticFeedback).toHaveBeenCalledWith('r1', 'sug-1', expect.objectContaining({ action: 'confirm', signal: expect.any(AbortSignal) }))
+    expect(api.getDiagnostics).toHaveBeenCalledTimes(2)
+    expect(content('diagnostics')).toContain('已确认建议')
+    expect(document.querySelector('[data-action="diagnostic-feedback"]')).toBeNull()
+  })
+})
+
+describe('运行比较：先展示集合变化再解释结果', () => {
+  it('只对当前正式轮中的另一运行比较，并保留不可比说明', async () => {
+    const round = makeRound({ runs: [makeRun('r1'), makeRun('r2', { status: 'passed' })] })
+    const api = fakeApi()
+    await open({ round, runId: 'r1', tab: 'compare' }, api)
+    expect(content('compare')).toContain('当前结果不可直接比较')
+    expect(content('compare')).toContain('检查项集合发生变化')
+    expect(api.compareRuns).toHaveBeenCalledWith('r1', 'r2', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    const selector = $('[data-control="compare-run"]')
+    expect(selector.options).toHaveLength(1)
+    expect(selector.value).toBe('r2')
+  })
+})
+
+describe('结构化解决经验反馈', () => {
+  it('提交解决办法时携带运行证据并保持未验证状态', async () => {
+    const data = { ok: true, runId: 'r1', repo: 'fixture-repo', status: 'failed', unit: 'smoke', side: 'web', phase: 'smoke', terminalReason: 'assertion_failed',
+      failureAnalysis: { hasFailure: true, category: 'product', categoryZh: '产品缺陷', firstCaseKey: 'test:spec/order' },
+      suggestions: [], similarFailures: [], similarExperiences: [] }
+    const api = fakeApi({ getDiagnostics: vi.fn(async () => data) })
+    await open({ tab: 'diagnostics' }, api)
+    const input = $('[data-control="experience-resolution"]')
+    input.value = '修复响应码校验，并补充回归断言。'
+    input.closest('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
+    await flush()
+    expect(api.submitExperienceFeedback).toHaveBeenCalledWith(expect.objectContaining({
+      repo: 'fixture-repo', runId: 'r1', sourceType: 'run',
+      failureSummary: '产品缺陷 · test:spec/order', resolutionSummary: '修复响应码校验，并补充回归断言。',
+      scope: { unit: 'smoke', side: 'web', phase: 'smoke', category: 'product', caseKey: 'test:spec/order' },
+      evidence: { runId: 'r1', caseKey: 'test:spec/order', terminalReason: 'assertion_failed', source: 'stored_run_report' },
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(content('diagnostics')).toContain('当前为未验证状态')
   })
 })
 

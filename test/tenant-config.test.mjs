@@ -5,7 +5,7 @@
  * 2. getTenantSkill：全文读取 + 非法名净化
  * 3. runTenantChecks（guest）：通过/失败/skip 三态（spawn cmd /c echo 类脚本）
  */
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -78,15 +78,40 @@ describe('runTenantChecks（guest 租户检查三态）', () => {
   })
 
   it('检查通过 → passed；检查失败 → failed 带输出', () => {
-    const ws = wsRoot({ config: { checks: [{ name: 'always-ok', script: 'echo ok' }] } })
+    const ws = wsRoot({ config: { checks: [{ name: 'always-ok', command: ['node', '-e', 'process.stdout.write("ok")'] }] } })
     const pass = runTenantChecks({ workspaceDir: ws })
     expect(pass[0].status).toBe('passed')
     expect(pass[0].detail).toContain('1 项')
 
-    const wsFail = wsRoot({ config: { checks: [{ name: 'always-fail', script: 'exit /b 3' }] } })
+    const wsFail = wsRoot({ config: { checks: [{ name: 'always-fail', command: ['node', '-e', 'process.exit(3)'] }] } })
     const fail = runTenantChecks({ workspaceDir: wsFail })
     expect(fail[0].status).toBe('failed')
     expect(fail[0].detail).toContain('always-fail')
+  })
+
+  it('argv 中的 shell 元字符作为普通参数传递；shell executable 与旧 script 字段不执行', () => {
+    const ws = wsRoot({ withConfig: false })
+    mkdirSync(join(ws, '.awp'), { recursive: true })
+    const marker = join(ws, 'shell-was-run')
+    const payload = `$(touch ${marker});& echo unexpected`
+    writeFileSync(join(ws, '.awp', 'config.json'), JSON.stringify({ checks: [{
+      name: 'literal-argv',
+      command: ['node', '-e', 'if (process.argv[1] !== process.argv[2]) process.exit(9)', payload, payload],
+    }] }))
+    const safe = runTenantChecks({ workspaceDir: ws })
+    expect(safe[0].status).toBe('passed')
+    expect(existsSync(marker)).toBe(false)
+
+    writeFileSync(join(ws, '.awp', 'config.json'), JSON.stringify({ checks: [{ name: 'shell', command: ['sh', '-c', 'exit 0'] }] }))
+    const shell = runTenantChecks({ workspaceDir: ws })
+    expect(shell[0].status).toBe('failed')
+    expect(shell[0].detail).toContain('non-shell command argv array')
+
+    writeFileSync(join(ws, '.awp', 'config.json'), JSON.stringify({ checks: [{ name: 'legacy', script: `touch ${marker}` }] }))
+    const legacy = runTenantChecks({ workspaceDir: ws })
+    expect(legacy[0].status).toBe('failed')
+    expect(legacy[0].detail).toContain('invalid project check')
+    expect(existsSync(marker)).toBe(false)
   })
 
   it('坏 JSON → failed', () => {

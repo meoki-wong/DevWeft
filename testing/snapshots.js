@@ -494,7 +494,7 @@ export function alignWorkspaceBase(repoPath, { baseSha = null, branch = null, fa
 export function applyWorkspaceDiff(repoPath, diffText, { maxBytes = 24 * 1024 * 1024 } = {}) {
   const fail = (code, detail) => { const e = new ApiError(code, { detail }); e.httpStatus = 409; return e }
   if (typeof diffText !== 'string' || !diffText.trim()) {
-    throw fail('SOURCE_DIFF_EMPTY', 'codeDiff 为空：请传 git diff 全文（含新文件先 `git add -N .` 再 `git diff`）。')
+    throw fail('SOURCE_DIFF_EMPTY', 'codeDiff is empty. For a configured remote runner, provide a reviewed patch containing only the intended task changes; do not include credentials or unrelated files.')
   }
   if (Buffer.byteLength(diffText, 'utf8') > maxBytes) {
     throw fail('SOURCE_DIFF_TOO_LARGE', `codeDiff 超过 ${maxBytes} 字节上限：请缩小任务范围或仅传业务改动。`)

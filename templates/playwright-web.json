@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/meoki-wong/DevWeft/main/schemas/project-config.schema.json",
+  "schemaVersion": 1,
+  "checks": [
+    {
+      "id": "playwright-web",
+      "name": "Playwright web tests",
+      "command": ["node", "node_modules/@playwright/test/cli.js", "test"],
+      "timeoutSeconds": 600
+    }
+  ]
+}

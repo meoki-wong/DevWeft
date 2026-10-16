@@ -73,6 +73,7 @@ async function initSession() {
   expect(res.status).toBe(200)
   const body = await readRpc(res)
   expect(body.result?.serverInfo?.name).toBeTruthy()
+  expect(body.result?.serverInfo?.name).toBe('devweft')
   // bootstrap instructions：工作流铁律必须注入（AI 的第一阶段上下文）
   const instructions = body.result?.instructions || ''
   expect(instructions.length).toBeGreaterThan(0)

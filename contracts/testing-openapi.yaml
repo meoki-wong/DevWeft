@@ -6,7 +6,7 @@ info:
     Control plane `/v1` plus independent secret broker `/v1`.
     Envelope is always `{ data, error, meta }`. Success requires `error=null`.
     Unknown request fields must be rejected with `UNKNOWN_FIELD`.
-    Source: docs/TEST-PLATFORM-ENTERPRISE.md §14–§17.
+    Error-code source: contracts/errors.md. Keep the OpenAPI ErrorCode enum in sync with that file.
 servers:
   - url: https://control-plane.local/v1
     description: Harness control plane
@@ -239,6 +239,22 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/OkEmptyData'
+        default:
+          $ref: '#/components/responses/ErrorEnvelope'
+  /test-runs/{runId}/explain:
+    get:
+      tags: [submissions]
+      operationId: explainTestRun
+      description: Read-only explanation based on the immutable run binding, suite lock, profile, image, and policy revisions.
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          $ref: '#/components/responses/TestRunExplain'
         default:
           $ref: '#/components/responses/ErrorEnvelope'
   /test-runs/{runId}/artifact:
@@ -597,6 +613,8 @@ components:
       enum:
         - UNKNOWN_FIELD
         - INVALID_SCHEMA
+        - RUN_NOT_FOUND
+        - BLOB_STORE_UNAVAILABLE
         - UNRESOLVED_REMOTE
         - CROSS_REPO_REFERENCE
         - BRANCH_UNVERIFIED
@@ -802,7 +820,6 @@ components:
             - targetRemoteId
             - targetRef
             - targetCommitOid
-            - mr
           properties:
             objectFormat:
               type: string
@@ -825,10 +842,6 @@ components:
               pattern: '^refs/'
             targetCommitOid:
               $ref: '#/components/schemas/GitOid'
-            mr:
-              anyOf:
-                - type: 'null'
-                - type: object
         bundle:
           type: object
           additionalProperties: false
@@ -1009,52 +1022,6 @@ components:
           minItems: 1
           items:
             $ref: '#/components/schemas/Sha256'
-        reason:
-          type: string
-          minLength: 1
-    ApprovePromotion:
-      type: object
-      additionalProperties: false
-      required: [expectedRevision, decision, reviewedManifestSha256, replays, mergeRequest, reason]
-      properties:
-        expectedRevision:
-          type: integer
-          minimum: 1
-        decision:
-          type: string
-          enum: [approve]
-        reviewedManifestSha256:
-          $ref: '#/components/schemas/Sha256'
-        replays:
-          type: array
-          items:
-            type: object
-            additionalProperties: false
-            required: [bindingId, runId, resultSha256, status]
-            properties:
-              bindingId:
-                $ref: '#/components/schemas/Sha256'
-              runId:
-                $ref: '#/components/schemas/Uuid'
-              resultSha256:
-                $ref: '#/components/schemas/Sha256'
-              status:
-                type: string
-                enum: [passed]
-        mergeRequest:
-          type: object
-          additionalProperties: false
-          required: [provider, projectId, iid, mergeCommitOid]
-          properties:
-            provider:
-              type: string
-              enum: [gitlab]
-            projectId:
-              type: string
-            iid:
-              type: integer
-            mergeCommitOid:
-              $ref: '#/components/schemas/GitOid'
         reason:
           type: string
           minLength: 1
@@ -1270,6 +1237,12 @@ components:
             $ref: '#/components/schemas/Envelope'
     TestRunGet:
       description: Test run
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    TestRunExplain:
+      description: Read-only explanation of the frozen run selection and execution environment
       content:
         application/json:
           schema:

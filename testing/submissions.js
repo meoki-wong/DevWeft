@@ -38,7 +38,7 @@ export async function createTestSubmission(db, blobs, body, principal, { now = u
   }
   rejectUnknownFields(body.git || {}, [
     'objectFormat', 'sourceRef', 'headCommitOid', 'snapshotCommitOid', 'snapshotTreeOid',
-    'changedPathsSha256', 'targetRemoteId', 'targetRef', 'targetCommitOid', 'mr', 'changedFiles',
+    'changedPathsSha256', 'targetRemoteId', 'targetRef', 'targetCommitOid', 'changedFiles',
   ])
   rejectUnknownFields(body.bundle || {}, ['sha256', 'size'])
   rejectUnknownFields(body.suiteRequest || {}, ['mode', 'candidateRevisionIds', 'candidateApprovalIds'])
@@ -50,7 +50,7 @@ export async function createTestSubmission(db, blobs, body, principal, { now = u
   const git = body.git
   if (!git.objectFormat || !git.sourceRef || !git.headCommitOid || !git.snapshotCommitOid
     || !git.snapshotTreeOid || !git.changedPathsSha256 || !git.targetRemoteId || !git.targetRef
-    || !git.targetCommitOid || !Object.prototype.hasOwnProperty.call(git, 'mr')) {
+    || !git.targetCommitOid) {
     throw new ApiError('INVALID_SCHEMA')
   }
   if (!/^[a-f0-9]{64}$/.test(body.bundle.sha256) || !Number.isInteger(body.bundle.size) || body.bundle.size < 1) {

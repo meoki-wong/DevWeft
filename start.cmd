@@ -8,6 +8,13 @@ if not exist "node_modules" (
   exit /b 1
 )
 
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\preflight.ps1" -Profile standalone
+if errorlevel 1 (
+  echo Startup preflight failed. Review the error above.
+  pause
+  exit /b 1
+)
+
 npm start
 set "START_EXIT_CODE=%ERRORLEVEL%"
 echo.

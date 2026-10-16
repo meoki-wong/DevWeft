@@ -42,9 +42,9 @@ describe('worker_concurrency 严格契约', () => {
 })
 
 describe('健康检查 live/ready', () => {
-  function mkApp(database) {
+  function mkApp(database, healthOptions = {}) {
     const app = express()
-    mountHealthRoutes(app, { database })
+    mountHealthRoutes(app, { database, ...healthOptions })
     return app
   }
 
@@ -64,7 +64,26 @@ describe('健康检查 live/ready', () => {
     expect(ready.status).toBe(200)
     const rb = await ready.json()
     expect(rb.ready).toBe(true)
+    expect(rb.schemaVersion).toBe(43)
     expect(rb.checks.every((c) => c.ok)).toBe(true)
+    expect(rb.node).toEqual({ role: 'primary', executionMode: 'disabled' })
+    server.close()
+    raw.close()
+  })
+
+  it('migration ledger checksum drift → ready 503 with the failed migration identified', async () => {
+    const raw = new Database(join(mkdtempSync(join(tmpdir(), 'awp-hl-ledger-')), 't.db'))
+    await runTestingMigrations(raw, { skipLegacyMap: true })
+    await raw.prepare('UPDATE schema_migrations SET checksum=? WHERE version=41').run('tampered')
+    const app = mkApp(raw)
+    const server = app.listen(0)
+    await new Promise((r) => server.on('listening', r))
+    const base = `http://127.0.0.1:${server.address().port}`
+    const ready = await fetch(`${base}/api/health/ready`)
+    expect(ready.status).toBe(503)
+    const body = await ready.json()
+    expect(body.ready).toBe(false)
+    expect(body.checks).toContainEqual(expect.objectContaining({ name: 'migration:v41', ok: false }))
     server.close()
     raw.close()
   })
@@ -82,5 +101,65 @@ describe('健康检查 live/ready', () => {
     expect(rb.ready).toBe(false)
     expect(rb.checks.some((c) => c.ok === false)).toBe(true)
     server.close()
+  })
+
+  it('备用机远程 blob 不可达时 readiness 503，明确无本地缓存与恢复方式', async () => {
+    const raw = new Database(join(mkdtempSync(join(tmpdir(), 'awp-hl-standby-')), 't.db'))
+    await runTestingMigrations(raw, { skipLegacyMap: true })
+    const app = mkApp(raw, {
+      nodeRole: 'standby',
+      getBlobStorage: async () => ({
+        ok: false,
+        mode: 'remote',
+        state: 'remote_unavailable',
+        localCache: false,
+        recovery: 'retry_submission_after_remote_blob_restore',
+      }),
+    })
+    const server = app.listen(0)
+    await new Promise((r) => server.on('listening', r))
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/health/ready`)
+    const body = await response.json()
+    expect(response.status).toBe(503)
+    expect(body.checks.find((check) => check.name === 'sqlite_query').ok).toBe(true)
+    expect(body.node.role).toBe('standby')
+    expect(body.blobStorage).toMatchObject({ ok: false, mode: 'remote', localCache: false })
+    expect(body.blobStorage.recovery).toBe('retry_submission_after_remote_blob_restore')
+    server.close()
+    raw.close()
+  })
+
+  it('主机本地 blob 可用时保持 ready；独立备用上传端点降级单独暴露', async () => {
+    const raw = new Database(join(mkdtempSync(join(tmpdir(), 'awp-hl-primary-')), 't.db'))
+    await runTestingMigrations(raw, { skipLegacyMap: true })
+    const app = mkApp(raw, {
+      getBlobStorage: async () => ({ ok: true, mode: 'local', state: 'available', localCache: false }),
+      getStandbyUploadEndpoint: async () => ({ ok: false, state: 'remote_unavailable' }),
+    })
+    const server = app.listen(0)
+    await new Promise((r) => server.on('listening', r))
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/health/ready`)
+    const body = await response.json()
+    expect(response.status).toBe(200)
+    expect(body.ready).toBe(true)
+    expect(body.blobStorage.mode).toBe('local')
+    expect(body.standbyUploadEndpoint).toMatchObject({ ok: false, state: 'remote_unavailable' })
+    server.close()
+    raw.close()
+  })
+
+  it('主机本地 blob 存储不可用时 readiness 503', async () => {
+    const raw = new Database(join(mkdtempSync(join(tmpdir(), 'awp-hl-primary-blob-fail-')), 't.db'))
+    await runTestingMigrations(raw, { skipLegacyMap: true })
+    const app = mkApp(raw, {
+      getBlobStorage: async () => ({ ok: false, mode: 'local', state: 'local_storage_unavailable' }),
+    })
+    const server = app.listen(0)
+    await new Promise((r) => server.on('listening', r))
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/health/ready`)
+    expect(response.status).toBe(503)
+    expect((await response.json()).blobStorage.state).toBe('local_storage_unavailable')
+    server.close()
+    raw.close()
   })
 })

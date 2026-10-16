@@ -7,7 +7,8 @@
  * 降级：服务不可达时明确提示可暂用 IDE 侧直连 Lanhu MCP 兜底
  */
 import { z } from 'zod'
-import { lanhuConfigured, lanhuListTools, lanhuCallTool, LANHU_TOOL_WHITELIST } from '../testing/lanhu-gateway.js'
+import { lanhuConfigured, lanhuDesignSource, LANHU_TOOL_WHITELIST } from '../testing/lanhu-gateway.js'
+import { validateExtension } from '../extensions/contracts.js'
 import { attachTaskAsset } from '../harness/attachments.js'
 import { recordAuditEvent } from '../audit/index.js'
 
@@ -17,7 +18,8 @@ function textOut(s) {
 
 const FALLBACK_HINT = '\n（蓝湖服务不可达时可暂用 IDE 侧直连 Lanhu MCP 兜底）'
 
-export function registerLanhuTools(server) {
+export function registerLanhuTools(server, { designSource = lanhuDesignSource, isConfigured = lanhuConfigured } = {}) {
+  validateExtension('designSource', designSource)
   server.registerTool(
     'awp_design_tools',
     {
@@ -30,9 +32,9 @@ export function registerLanhuTools(server) {
       },
     },
     async ({ author }) => {
-      if (!lanhuConfigured()) return textOut('蓝湖设计网关未启用（设置 AWP_LANHU_MCP_URL）。' + FALLBACK_HINT)
+      if (!isConfigured()) return textOut('设计源未启用（配置 AWP_LANHU_MCP_URL 或注入 DesignSource）。' + FALLBACK_HINT)
       try {
-        const tools = await lanhuListTools(author)
+        const tools = await designSource.listTools(author)
         if (!tools.length) return textOut('蓝湖网关已连通，但白名单内没有可用工具。' + FALLBACK_HINT)
         return textOut(
           '蓝湖设计工具（服务端代理，白名单）：\n' +
@@ -62,10 +64,10 @@ export function registerLanhuTools(server) {
       },
     },
     async ({ tool, args = {}, taskId = null, repo = 'demo-app', author }) => {
-      if (!lanhuConfigured()) return textOut('蓝湖设计网关未启用（设置 AWP_LANHU_MCP_URL）。' + FALLBACK_HINT)
+      if (!isConfigured()) return textOut('设计源未启用（配置 AWP_LANHU_MCP_URL 或注入 DesignSource）。' + FALLBACK_HINT)
       const user = String(author || 'anonymous').slice(0, 80)
       try {
-        const r = await lanhuCallTool(user, tool, args)
+        const r = await designSource.callTool(user, tool, args)
         try {
           recordAuditEvent({
             eventType: 'lanhu_design_call',

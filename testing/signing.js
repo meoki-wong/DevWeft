@@ -6,7 +6,9 @@ import { canonicalize, documentSha256, sha256Hex } from '../contracts/version.mj
 import { uuidv7, utcNow } from './ids.js'
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
-const KEY_DIR = path.join(root, 'data', 'signing-keys')
+const KEY_DIR = process.env.AWP_SIGNING_KEY_DIR
+  ? path.resolve(process.env.AWP_SIGNING_KEY_DIR)
+  : path.join(root, 'data', 'signing-keys')
 
 export function generateEd25519Pem() {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')

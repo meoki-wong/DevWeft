@@ -162,15 +162,22 @@ export async function reconcileRuns(db, { now = new Date() } = {}) {
 }
 
 // QUERY_CLASS: WORKER —— 全局工人队列：按 priority/created_at 取队首，不按租户过滤（方案 §2.7/§7.1）
-export async function acquireLease(db, worker, { now = new Date() } = {}) {
+export async function acquireLease(db, worker, { now = new Date(), unit = null } = {}) {
+  if (unit !== null && !['static', 'smoke'].includes(unit)) throw new ApiError('INVALID_SCHEMA')
   const nowIso = now.toISOString()
   const tx = async (tx) => {
     await requeueExpiredReservations(tx, nowIso)
-    const queued = await tx.prepare(
-      `SELECT * FROM test_runs
-       WHERE status='queued' AND desired_state='running'
-       ORDER BY priority ASC, created_at ASC LIMIT 1`
-    ).get()
+    const queued = unit
+      ? await tx.prepare(
+        `SELECT * FROM test_runs
+         WHERE status='queued' AND desired_state='running' AND unit=?
+         ORDER BY priority ASC, created_at ASC LIMIT 1`
+      ).get(unit)
+      : await tx.prepare(
+        `SELECT * FROM test_runs
+         WHERE status='queued' AND desired_state='running'
+         ORDER BY priority ASC, created_at ASC LIMIT 1`
+      ).get()
     if (!queued) return null
     const updated = await tx.prepare(
       `UPDATE test_runs
@@ -896,13 +903,18 @@ export async function rejectLease(db, worker, leaseId, body, { now = new Date() 
           allowExpired: true,
         })
         const run = await tx.prepare('SELECT * FROM test_runs WHERE run_id=?').get(lease.run_id)
+        const canceled = run.desired_state !== 'running'
         await tx.prepare(
-          `UPDATE run_attempts SET status='error', error_code=?, finished_at=? WHERE run_id=? AND attempt=?`
-        ).run(errorCode, nowIso, lease.run_id, lease.attempt)
+          `UPDATE run_attempts SET status=?, error_code=?, finished_at=? WHERE run_id=? AND attempt=?`
+        ).run(canceled ? 'canceled' : 'error', canceled ? null : errorCode, nowIso, lease.run_id, lease.attempt)
         await tx.prepare(`UPDATE runner_leases SET revoked_at=? WHERE lease_id=?`).run(nowIso, leaseId)
         // §11.4：基础设施错误自动重试一次（新建 attempt/lease/VM 由下次 acquire 完成）
         // 不可恢复错误（noRetry=true）直接终态，不重试
-        if (!noRetry && run.next_attempt < run.max_attempts) {
+        if (canceled) {
+          await tx.prepare(
+            `UPDATE test_runs SET status='canceled', terminal_reason='canceled', finished_at=? WHERE run_id=? AND status='active'`
+          ).run(nowIso, lease.run_id)
+        } else if (!noRetry && run.next_attempt < run.max_attempts) {
           await tx.prepare(`UPDATE test_runs SET status='queued' WHERE run_id=? AND status='active'`).run(lease.run_id)
         } else {
           await tx.prepare(
@@ -915,7 +927,7 @@ export async function rejectLease(db, worker, leaseId, body, { now = new Date() 
           attempt: lease.attempt,
           leaseEpoch: lease.lease_epoch,
           eventType: 'reject',
-          detail: { reason: terminalReason, noRetry },
+          detail: { reason: canceled ? 'canceled' : terminalReason, noRetry },
           repoId: lease.repo_id,
         })
         return { status: 200, data: {} }

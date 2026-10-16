@@ -3,8 +3,12 @@ const logs = path.join(__dirname, 'data', 'logs')
 const dbEnv = process.env.AWP_DB_DIALECT === 'postgres'
   ? { AWP_DB_DIALECT: 'postgres', AWP_PG_URL: process.env.AWP_PG_URL || '' }
   : { AWP_DB_DIALECT: 'sqlite' }
+const postgresEnabled = process.env.AWP_DB_DIALECT === 'postgres'
 const runnerRoot = process.env.AWP_RUNNER_ROOT || path.join(__dirname, 'data', 'runner')
 const vmSwitchName = process.env.AWP_VM_SWITCH_NAME || 'awp-isolated'
+const runnerBackend = String(process.env.AWP_RUNNER_BACKEND || 'hyperv').trim().toLowerCase()
+if (!['hyperv', 'local'].includes(runnerBackend)) throw new Error('AWP_RUNNER_BACKEND must be hyperv or local')
+const workerEnabled = runnerBackend === 'local' || (runnerBackend === 'hyperv' && String(process.env.AWP_HYPERV_ENABLED || '').toLowerCase() === 'true')
 
 module.exports = {
   apps: [
@@ -40,10 +44,12 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: process.env.AWP_CONTROL_PORT || '8791',
+        AWP_STANDBY: '0',
+        AWP_BLOB_ROOT: process.env.AWP_BLOB_ROOT || path.join(__dirname, 'data', 'blobs'),
         ...dbEnv,
       },
     },
-    {
+    ...(postgresEnabled ? [{
       name: 'awp-blob-store',
       script: 'runner/blob-store/server.mjs',
       cwd: __dirname,
@@ -58,9 +64,11 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: process.env.AWP_BLOB_PORT || '8792',
+        AWP_STANDBY: '0',
+        AWP_BLOB_ROOT: process.env.AWP_BLOB_ROOT || path.join(__dirname, 'data', 'blobs'),
         ...dbEnv,
       },
-    },
+    }] : []),
     {
       name: 'awp-secret-broker',
       script: 'secret-broker/server.mjs',
@@ -101,7 +109,7 @@ module.exports = {
         ...dbEnv,
       },
     },
-    {
+    ...(workerEnabled ? [{
       name: 'awp-host-worker',
       script: 'runner/host-worker/worker-service.mjs',
       cwd: __dirname,
@@ -116,10 +124,18 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         AWP_RUNNER_ROOT: runnerRoot,
+        AWP_BLOB_ROOT: process.env.AWP_BLOB_ROOT || path.join(__dirname, 'data', 'blobs'),
         AWP_VM_SWITCH_NAME: vmSwitchName,
+        AWP_VM_NETWORK_CIDR: process.env.AWP_VM_NETWORK_CIDR || '192.168.250.0/24',
+        AWP_HYPERV_ENABLED: String(process.env.AWP_HYPERV_ENABLED || 'false'),
+        AWP_RUNNER_BACKEND: runnerBackend,
+        AWP_GATEWAY_PORT: process.env.AWP_GATEWAY_PORT || '8787',
+        AWP_BROKER_PORT: process.env.AWP_BROKER_PORT || '8788',
+        AWP_CONTROL_PORT: process.env.AWP_CONTROL_PORT || '8791',
+        AWP_BLOB_PORT: process.env.AWP_BLOB_PORT || '8792',
         ...dbEnv,
       },
-    },
+    }] : []),
     {
       name: 'awp-janitor',
       script: 'runner/host-worker/janitor.mjs',

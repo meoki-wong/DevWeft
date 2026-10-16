@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync, statSync, mkdirSync, copyFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 const STATIC_TIMEOUT_MS = 600000
@@ -94,7 +94,7 @@ function readTenantConfig(workspaceDir) {
 }
 
 /**
- * test:static/tenant-checks：租户自定义 shell/npm 检查（VM 内隔离执行，快照内自包含）。
+ * test:static/tenant-checks：租户自定义 argv 检查（VM 内隔离执行，快照内自包含）。
  * 任一失败 → product 类（计分、烧迭代、药方带脚本输出）。
  */
 export function runTenantChecks({ workspaceDir } = {}) {
@@ -113,14 +113,23 @@ export function runTenantChecks({ workspaceDir } = {}) {
   const failed = []
   let ran = 0
   for (const c of checks) {
-    if (!c || !c.name || !c.script) continue
-    const timeout = Math.min(600000, Number(c.timeout) > 0 ? Number(c.timeout) * 1000 : 120000)
+    const command = Array.isArray(c?.command) ? c.command : null
+    const shellExecutables = new Set(['sh', 'bash', 'dash', 'zsh', 'cmd', 'powershell', 'pwsh'])
+    const executableName = command?.[0] ? basename(command[0]).toLowerCase().replace(/\.exe$/, '') : ''
+    if (!c || typeof c.name !== 'string' || !c.name.trim() || !command?.length ||
+      command.some((arg) => typeof arg !== 'string' || !arg.length || /[\0\r\n]/.test(arg)) ||
+      shellExecutables.has(executableName) ||
+      (c.timeoutSeconds !== undefined && (!Number.isInteger(c.timeoutSeconds) || c.timeoutSeconds < 1 || c.timeoutSeconds > 600))) {
+      failed.push(`${c?.name || '(unnamed check)'}: invalid project check; use a non-shell command argv array and timeoutSeconds from 1 to 600`)
+      continue
+    }
+    const timeout = (c.timeoutSeconds || 120) * 1000
     ran += 1
     try {
-      const r = spawnSync('cmd.exe', ['/c', c.script], { cwd: workspaceDir, timeout, encoding: 'utf8' })
+      const r = spawnSync(command[0], command.slice(1), { cwd: workspaceDir, timeout, encoding: 'utf8', shell: false })
       if (r.status !== 0) {
         failed.push(
-          `${c.name}: exit=${r.status}${r.signal ? ` signal=${r.signal}` : ''}\n` +
+          `${c.name}: exit=${r.status}${r.signal ? ` signal=${r.signal}` : ''}${r.error ? ` error=${r.error.message}` : ''}\n` +
             String(r.stdout || '').split(/\r?\n/).filter(Boolean).slice(-6).join('\n') +
             (r.stderr ? `\n[stderr] ${String(r.stderr).slice(-300)}` : '')
         )

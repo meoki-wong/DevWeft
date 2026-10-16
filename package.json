@@ -4,9 +4,15 @@
   "license": "MIT",
   "type": "module",
   "description": "A multi-tenant MCP platform for team knowledge, workflow orchestration, and isolated test execution.",
+  "bin": {
+    "devweft": "bin/devweft.js"
+  },
+  "engines": {
+    "node": "^22.12.0 || ^24.0.0 || >=26.0.0"
+  },
   "scripts": {
-    "start": "node server.js",
-    "db:init": "node db.js",
+    "start": "node --import=./scripts/load-deployment-env.mjs server.js",
+    "db:init": "node --import=./scripts/load-deployment-env.mjs db.js",
     "test:harness": "node test-harness.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -14,24 +20,35 @@
     "secret-broker": "node secret-broker/server.mjs",
     "secret-broker:put": "node secret-broker/put-secret.mjs",
     "test-submit": "node scripts/test-submit.mjs",
-    "bootstrap": "node scripts/bootstrap-test-platform.mjs",
-    "backup": "node scripts/backup-db.mjs",
+    "bootstrap": "node --import=./scripts/load-deployment-env.mjs scripts/bootstrap-test-platform.mjs",
+    "backup": "node --import=./scripts/load-deployment-env.mjs scripts/backup-db.mjs",
+    "restore": "node --import=./scripts/load-deployment-env.mjs scripts/restore-db.mjs",
+    "evidence:verify": "node scripts/verify-evidence-pack.mjs",
+    "postgres:check": "node --import=./scripts/load-deployment-env.mjs scripts/postgres-doctor.mjs",
+    "image:sbom": "node runner/image/sbom.mjs",
+    "image:publish": "node --import=./scripts/load-deployment-env.mjs scripts/image-publish.mjs",
+    "image:verify": "node --import=./scripts/load-deployment-env.mjs scripts/verify-runner-image.mjs",
+    "worker": "node --import=./scripts/load-deployment-env.mjs runner/host-worker/worker-service.mjs",
+    "devweft": "node bin/devweft.js",
+    "verify:release": "node scripts/verify-release.mjs",
     "policies:build": "node scripts/build-policies.mjs"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.5.8",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@open-policy-agent/opa-wasm": "^1.10.0",
     "acorn": "^8.18.0",
+    "ajv": "^8.20.0",
     "better-sqlite3": "^11.0.0",
     "express": "^5.2.1",
     "pg": "^8.23.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^1.6.0",
-    "happy-dom": "^14.12.3",
-    "vitest": "^1.6.0"
+    "@electric-sql/pglite": "^0.5.10",
+    "@vitest/coverage-v8": "^5.0.4",
+    "happy-dom": "^21.0.1",
+    "vitest": "^5.0.4",
+    "yaml": "^2.9.1"
   },
   "optionalDependencies": {
     "@embedded-postgres/windows-x64": "^18.4.0-beta.17"

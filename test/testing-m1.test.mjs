@@ -21,6 +21,8 @@ import { SCHEMA_VERSION, bindingIdFromDocument, documentSha256 } from '../contra
 import { createTestSubmission, getTestSubmission } from '../testing/submissions.js'
 import { previewSuitePlan } from '../testing/suite-plan.js'
 
+process.env.AWP_REPO_PLATFORM_CONFIG = 'data/repo-platform.example.json'
+
 async function memdb() {
   const db = new Database(join(mkdtempSync(join(tmpdir(), 'awp-m1-')), 't.db'))
   db.pragma('foreign_keys = ON')
@@ -56,7 +58,14 @@ describe('M1 identity snapshot binding', () => {
         headCommitOid: OID,
         objectFormat: 'sha1',
       })).rejects.toThrow(/UNRESOLVED_REMOTE/)
-    await registerRemote(db, { repoId, url: 'https://gitlab.example/Web/demo-app.git', providerInstance: 'gitlab.example' })
+    const remote = await registerRemote(db, { repoId, url: 'https://gitlab.example/Web/demo-app.git', providerInstance: 'gitlab.example' })
+    expect(remote.provider).toBe('generic')
+    const githubRemote = await registerRemote(db, {
+      repoId,
+      url: 'https://github.com/example/demo-app.git',
+      provider: 'github',
+    })
+    expect(githubRemote.provider).toBe('github')
     const ctx = await resolveGitContext(db, {
       remotes: [{ name: 'origin', url: 'git@gitlab.example:Web/demo-app.git' }],
       sourceRef: 'refs/heads/feature-x',
@@ -341,6 +350,7 @@ describe('M1 identity snapshot binding', () => {
   it('queues a submission by external task id without fake pass', async () => {
     const db = await memdb()
     const boot = await bootstrapTestingPlatform(db, {
+      slug: 'example-app',
       remoteUrl: 'https://gitlab.example/Web/demo-app.git',
       rotateToken: true,
     })
@@ -377,11 +387,10 @@ describe('M1 identity snapshot binding', () => {
     })
     expect(preview.lockSha256).toMatch(/^[a-f0-9]{64}$/)
     expect(preview.requiredCaseKeys.sort()).toEqual([
-      'test:smoke/fun',
-      'test:smoke/store',
+      'test:smoke/admin',
+      'test:smoke/web',
       'test:static/eslint',
       'test:static/hard-rules',
-      'test:static/translation-fixture',
       'test:static/vitest',
     ].sort())
     expect(preview.overlayRevisionIds).toHaveLength(2)
@@ -404,7 +413,6 @@ describe('M1 identity snapshot binding', () => {
         targetRemoteId: boot.remoteId,
         targetRef: 'refs/heads/stage',
         targetCommitOid: OID,
-        mr: null,
       },
       bundle: { sha256: sha, size: payload.length },
       suiteRequest: { mode: 'auto', candidateRevisionIds: [], candidateApprovalIds: [] },
@@ -441,7 +449,6 @@ describe('M1 identity snapshot binding', () => {
           targetRemoteId: boot.remoteId,
           targetRef: 'refs/heads/stage',
           targetCommitOid: OID,
-          mr: null,
         },
         bundle: { sha256: sha, size: payload.length },
         suiteRequest: { mode: 'auto', candidateRevisionIds: [], candidateApprovalIds: [] },

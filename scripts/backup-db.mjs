@@ -1,156 +1,186 @@
 /**
- * backup-db.mjs — 数据库备份（方案 §2.8/§13.1）
- * sqlite 方言：better-sqlite3 backup API / checkpoint+copy 降级（WAL 安全）
- * postgres 方言（AWP_DB_DIALECT=postgres）：调用 pg_dump
+ * Create a verified SQLite or PostgreSQL backup plus a SHA-256 manifest.
  *
- * 优先使用 better-sqlite3 backup API（在线、一致性、不停服）。
- * 不可用时降级：wal_checkpoint(TRUNCATE) + 三文件复制 + integrity_check。
- *
- * 用法：
- *   node scripts/backup-db.mjs [--db data/team.db] [--out data/backups] [--keep 14]
+ *   npm run backup -- --db data/team.db --out data/backups [--blob-dir data/blobs]
+ *   AWP_DB_DIALECT=postgres AWP_PG_URL=... npm run backup -- --out data/backups
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
+import pg from 'pg'
+import {
+  BACKUP_MANIFEST_VERSION,
+  copyArtifactDirectory,
+  describeArtifacts,
+  sha256File,
+  writeBackupManifest,
+} from './backup-manifest.mjs'
+import { makePostgresCliConnection, resolvePostgresTool } from './postgres-support.mjs'
 
 const execFile = promisify(execFileCb)
-const DIALECT = process.env.AWP_DB_DIALECT === 'postgres' ? 'postgres' : 'sqlite'
-const Database = DIALECT === 'sqlite' ? (await import('better-sqlite3')).default : null
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
+const DIALECT = process.env.AWP_DB_DIALECT === 'postgres' ? 'postgres' : 'sqlite'
 
-function arg(name, fallback) {
-  const i = process.argv.indexOf(`--${name}`)
-  if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1]
-  return fallback
+function option(name, fallback) {
+  const index = process.argv.indexOf(`--${name}`)
+  if (index < 0) return fallback
+  const value = process.argv[index + 1]
+  if (!value || value.startsWith('--')) throw new Error(`--${name} requires a value`)
+  return value
 }
 
-const DB_PATH = path.resolve(arg('db', path.join(ROOT, 'data', 'team.db')))
-const OUT_DIR = path.resolve(arg('out', path.join(ROOT, 'data', 'backups')))
-const KEEP = Number(arg('keep', '14'))
+const DB_PATH = path.resolve(option('db', path.join(ROOT, 'data', 'team.db')))
+const OUT_DIR = path.resolve(option('out', path.join(ROOT, 'data', 'backups')))
+const BLOB_DIR = path.resolve(option('blob-dir', process.env.AWP_BLOB_ROOT || path.join(ROOT, 'data', 'blobs')))
+const KEEP = Number(option('keep', '14'))
 
-if (!fs.existsSync(DB_PATH)) {
-  console.error(`[backup] 未找到 ${DB_PATH}`)
-  process.exit(0)
+function timestamp() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
 }
 
-fs.mkdirSync(OUT_DIR, { recursive: true })
-const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-const destPath = path.join(OUT_DIR, `team.db.${ts}.bak`)
-
-function report(obj) {
-  console.log(JSON.stringify(obj, null, 2))
-}
-
-async function backupPostgres() {
-  // postgres 方言：pg_dump（§2.8 替换 db.backup()/PRAGMA integrity_check）
-  const url = process.env.AWP_PG_URL || arg('pg-url', null)
-  if (!url) {
-    throw new Error('postgres 方言需要 AWP_PG_URL 或 --pg-url')
+function uniqueBackupPath(prefix, extension) {
+  const base = `${prefix}.${timestamp()}.${process.pid}`
+  const pathWithExtension = path.join(OUT_DIR, `${base}${extension}`)
+  if (fs.existsSync(pathWithExtension) || fs.existsSync(`${pathWithExtension}.manifest.json`)) {
+    throw new Error(`backup path already exists: ${pathWithExtension}`)
   }
-  const destPath = path.join(OUT_DIR, `team-pg.${ts}.sql`)
-  await execFile('pg_dump', ['--no-owner', '--no-privileges', '--file', destPath, url], {
-    env: { ...process.env, PGPASSWORD: process.env.AWP_PG_PASSWORD || '' },
-    timeout: 600_000,
+  return pathWithExtension
+}
+
+async function verifySqlite(filePath) {
+  const Database = (await import('better-sqlite3')).default
+  const db = new Database(filePath, { readonly: true, fileMustExist: true })
+  try {
+    const integrity = db.prepare('PRAGMA integrity_check').get()?.integrity_check
+    if (integrity !== 'ok') throw new Error(`SQLite integrity_check failed: ${String(integrity)}`)
+    const hasLedger = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()
+    const schemaVersion = hasLedger
+      ? Number(db.prepare('SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations').get().version)
+      : 0
+    return { integrityCheck: integrity, schemaVersion }
+  } finally {
+    db.close()
+  }
+}
+
+async function backupSqlite(backupPath, tempPath) {
+  const Database = (await import('better-sqlite3')).default
+  if (!fs.existsSync(DB_PATH)) throw new Error(`SQLite database does not exist: ${DB_PATH}`)
+  const source = new Database(DB_PATH, { readonly: true, fileMustExist: true })
+  try {
+    await source.backup(tempPath)
+  } finally {
+    source.close()
+  }
+  const verified = await verifySqlite(tempPath)
+  fs.renameSync(tempPath, backupPath)
+  return { mode: 'sqlite-online-backup', ...verified }
+}
+
+async function currentPostgresSchemaVersion(url) {
+  const client = new pg.Client({ connectionString: url })
+  try {
+    await client.connect()
+    const result = await client.query('SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations')
+    return Number(result.rows[0]?.version || 0)
+  } finally {
+    await client.end().catch(() => {})
+  }
+}
+
+async function backupPostgres(backupPath, tempPath) {
+  const url = process.env.AWP_PG_URL || option('pg-url', null)
+  if (!url) throw new Error('PostgreSQL backup requires AWP_PG_URL or --pg-url')
+  const schemaVersion = await currentPostgresSchemaVersion(url)
+  const cli = makePostgresCliConnection(url, {
+    ...process.env,
+    ...(process.env.AWP_PG_PASSWORD ? { PGPASSWORD: process.env.AWP_PG_PASSWORD } : {}),
   })
-  if (!fs.existsSync(destPath) || fs.statSync(destPath).size === 0) {
-    throw new Error('pg_dump 未产出备份文件')
-  }
-  return { mode: 'pg_dump', backupPath: destPath, integrityCheck: 'pg_dump exit 0' }
-}
-
-async function backupOnline() {
-  const src = new Database(DB_PATH, { readonly: true, fileMustExist: true })
   try {
-    // better-sqlite3: db.backup(destination) → Promise
-    await src.backup(destPath)
-  } finally {
-    src.close()
+    await execFile(resolvePostgresTool('pg_dump', { root: ROOT }), ['--format=custom', '--no-owner', '--no-privileges', '--file', tempPath, cli.connectionString], {
+      env: cli.env,
+      timeout: 600_000,
+      maxBuffer: 10 * 1024 * 1024,
+    })
+    await execFile(resolvePostgresTool('pg_restore', { root: ROOT }), ['--list', tempPath], { timeout: 60_000, maxBuffer: 10 * 1024 * 1024 })
+  } catch (error) {
+    throw new Error(`PostgreSQL dump/verification failed. Check that pg_dump and pg_restore are installed, match the server version, and can reach the database. ${error.code || error.message}`)
   }
-  const dest = new Database(destPath, { readonly: true, fileMustExist: true })
-  const integrity = dest.prepare('PRAGMA integrity_check').get()
-  const pageCount = dest.prepare('PRAGMA page_count').get()
-  dest.close()
-  return {
-    mode: 'sqlite-backup-api',
-    backupPath: destPath,
-    integrityCheck: integrity?.integrity_check || integrity || 'unknown',
-    pageCount: pageCount?.page_count ?? null,
-  }
+  if (!fs.existsSync(tempPath) || fs.statSync(tempPath).size === 0) throw new Error('pg_dump did not produce a backup archive')
+  fs.renameSync(tempPath, backupPath)
+  return { mode: 'pg_dump-custom', integrityCheck: 'pg_restore list succeeded', schemaVersion }
 }
 
-function backupCheckpointFallback() {
-  const src = new Database(DB_PATH)
-  let checkpoint = null
-  try {
-    checkpoint = src.pragma('wal_checkpoint(TRUNCATE)')
-  } finally {
-    src.close()
-  }
-  fs.copyFileSync(DB_PATH, destPath)
-  const wal = `${DB_PATH}-wal`
-  const shm = `${DB_PATH}-shm`
-  if (fs.existsSync(wal)) fs.copyFileSync(wal, `${destPath}-wal`)
-  if (fs.existsSync(shm)) fs.copyFileSync(shm, `${destPath}-shm`)
-  const dest = new Database(destPath, { readonly: true, fileMustExist: true })
-  const integrity = dest.prepare('PRAGMA integrity_check').get()
-  dest.close()
-  return {
-    mode: 'checkpoint+copy3',
-    backupPath: destPath,
-    checkpoint,
-    integrityCheck: integrity?.integrity_check || integrity || 'unknown',
-    walCopied: fs.existsSync(wal),
-    shmCopied: fs.existsSync(shm),
-  }
-}
-
-function prune() {
-  const files = fs
-    .readdirSync(OUT_DIR)
-    .filter((f) => (f.startsWith('team.db.') && f.endsWith('.bak')) || (f.startsWith('team-pg.') && f.endsWith('.sql')))
+function pruneBackups() {
+  if (!Number.isInteger(KEEP) || KEEP < 1) throw new Error('--keep must be a positive integer')
+  const candidates = fs.readdirSync(OUT_DIR)
+    .filter((name) => /^team\.(?:sqlite|postgres)\..+\.(?:bak|dump)$/.test(name))
     .sort()
     .reverse()
-  const excess = files.slice(KEEP)
-  for (const f of excess) {
-    fs.rmSync(path.join(OUT_DIR, f), { force: true })
-    console.log(`[backup] 删除旧备份: ${f}`)
+  const removed = []
+  for (const name of candidates.slice(KEEP)) {
+    const filePath = path.join(OUT_DIR, name)
+    fs.rmSync(filePath, { force: true })
+    fs.rmSync(`${filePath}.manifest.json`, { force: true })
+    fs.rmSync(`${filePath}.blobs`, { recursive: true, force: true })
+    removed.push(name)
   }
-  return { kept: Math.min(files.length, KEEP), deleted: excess.length }
+  return { kept: Math.min(candidates.length, KEEP), removed }
 }
 
-const started = Date.now()
-let result
-if (DIALECT === 'postgres') {
+async function main() {
+  if (!Number.isInteger(KEEP) || KEEP < 1) throw new Error('--keep must be a positive integer')
+  if (DIALECT === 'sqlite' && !fs.existsSync(DB_PATH)) throw new Error(`SQLite database does not exist: ${DB_PATH}`)
+  fs.mkdirSync(OUT_DIR, { recursive: true })
+  const started = Date.now()
+  const extension = DIALECT === 'sqlite' ? '.bak' : '.dump'
+  const backupPath = uniqueBackupPath(DIALECT === 'sqlite' ? 'team.sqlite' : 'team.postgres', extension)
+  const tempPath = `${backupPath}.${process.pid}.tmp`
+  let result
   try {
-    result = await backupPostgres()
-  } catch (e) {
-    console.error(`[backup] pg_dump 失败: ${e.message}`)
-    process.exit(1)
-  }
-} else {
-  try {
-    result = await backupOnline()
-  } catch (e) {
-    console.warn(`[backup] online backup API 失败，降级 checkpoint+copy: ${e.message}`)
-    try {
-      result = backupCheckpointFallback()
-    } catch (e2) {
-      console.error(`[backup] 备份失败: ${e2.message}`)
-      process.exit(1)
+    result = DIALECT === 'sqlite'
+      ? await backupSqlite(backupPath, tempPath)
+      : await backupPostgres(backupPath, tempPath)
+
+    const artifactsIncluded = fs.existsSync(BLOB_DIR)
+    const artifactPath = `${backupPath}.blobs`
+    if (artifactsIncluded) {
+      const outRoot = `${OUT_DIR}${path.sep}`
+      if (BLOB_DIR === OUT_DIR || BLOB_DIR.startsWith(outRoot)) {
+        throw new Error('blob directory cannot be inside the backup output directory')
+      }
+      copyArtifactDirectory(BLOB_DIR, artifactPath)
     }
+    const artifacts = artifactsIncluded ? await describeArtifacts(artifactPath) : []
+    const stat = fs.statSync(backupPath)
+    const manifest = {
+      manifestVersion: BACKUP_MANIFEST_VERSION,
+      dialect: DIALECT,
+      createdAt: new Date().toISOString(),
+      backupFile: path.basename(backupPath),
+      bytes: stat.size,
+      sha256: await sha256File(backupPath),
+      schemaVersion: result.schemaVersion,
+      integrityCheck: result.integrityCheck,
+      artifactsIncluded,
+      artifacts,
+    }
+    const manifestPath = await writeBackupManifest(backupPath, manifest)
+    const retention = pruneBackups()
+    process.stdout.write(`${JSON.stringify({ ...result, backupPath, manifestPath, bytes: stat.size, sha256: manifest.sha256, retention, durationMs: Date.now() - started }, null, 2)}\n`)
+  } catch (error) {
+    fs.rmSync(tempPath, { force: true })
+    fs.rmSync(backupPath, { force: true })
+    fs.rmSync(`${backupPath}.manifest.json`, { force: true })
+    fs.rmSync(`${backupPath}.blobs`, { recursive: true, force: true })
+    throw error
   }
 }
 
-const stat = fs.statSync(destPath)
-prune()
-report({
-  ...result,
-  bytes: stat.size,
-  durationMs: Date.now() - started,
-  recoverableTimestamp: ts,
+main().catch((error) => {
+  process.stderr.write(`[backup] failed: ${error.message}\n`)
+  process.exitCode = 1
 })
-console.log(`[backup] 完成 → ${destPath}`)

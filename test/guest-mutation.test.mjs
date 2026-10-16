@@ -21,7 +21,7 @@ function git(cwd, args) {
 
 beforeAll(() => {
   repoDir = mkdtempSync(join(tmpdir(), 'awp-gmut-'))
-  git(repoDir, 'init')
+  git(repoDir, 'init -b main')
   git(repoDir, 'config user.email t@t.local')
   git(repoDir, 'config user.name tester')
   mkdirSync(join(repoDir, 'src'), { recursive: true })
@@ -85,10 +85,10 @@ describe('merge commit 口径对齐（与平台侧 collectTaskChangedFiles 一�
     writeFileSync(join(repoDir, 'src', 'calc.js'), Array.from({ length: 30 }, (_, i) => `const line${i} = ${i * 2}`).join('\n') + '\n')
     git(repoDir, 'add -A')
     git(repoDir, 'commit -m feature')
-    git(repoDir, 'checkout master')
+    git(repoDir, 'checkout main')
     writeFileSync(join(repoDir, 'src', 'other.js'), 'const other = 1\n')
     git(repoDir, 'add -A')
-    git(repoDir, 'commit -m master-advance')
+    git(repoDir, 'commit -m main-advance')
     git(repoDir, 'merge --no-ff feature-merge -m merge')
     // HEAD 现在是 merge commit(2 个父提交)
     const parents = git(repoDir, 'rev-list --no-walk --parents HEAD').trim().split(/\s+/)

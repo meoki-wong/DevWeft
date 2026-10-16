@@ -85,6 +85,9 @@ export async function executeGuestAttempt({
       : runSpec.unit === 'smoke'
         ? await smokeExecutor({ workspaceDir, cases: unitCases, side: runSpec.side, runDir })
         : []
+    if (process.env.AWP_EXECUTION_BACKEND === 'local-process') {
+      for (const check of checks) check.execution = { backend: 'local-process', isolation: 'host-process' }
+    }
     mark('checks-done')
     const failed = checks.some((c) => c.status !== 'passed')
     const status = installError ? 'error' : (failed ? 'failed' : 'passed')

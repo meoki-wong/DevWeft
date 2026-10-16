@@ -10,11 +10,15 @@
  * 另含静态守卫：db.js / import 脚本不得再硬编码基线版本号。
  */
 import { describe, expect, it } from 'vitest'
+import express from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { PGlite } from '@electric-sql/pglite'
+import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm'
 import { createPostgresHandle } from '../db/postgres-driver.mjs'
+import { runPostgresPatchups } from '../testing/migrate.js'
+import { mountHealthRoutes } from '../dashboard/health.js'
 import {
   PG_BASELINE_NAME,
   SCHEMA_MIGRATIONS_DDL,
@@ -24,7 +28,7 @@ import {
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 
 async function newHandle() {
-  const pglite = await PGlite.create()
+  const pglite = await PGlite.create({ extensions: { pg_trgm } })
   const handle = await createPostgresHandle({ poolLike: pglite })
   return { handle, pglite }
 }
@@ -120,6 +124,50 @@ describe('postgres_baseline 登记（db/postgres-baseline.js）', () => {
         /INSERT\s+INTO\s+schema_migrations/i
       )
       expect(src, `${rel} 不得内联基线表 DDL`).not.toMatch(/CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+schema_migrations/i)
+    }
+  })
+
+  it('PG patchups are atomic, checksum-locked and repeatable on the public baseline', async () => {
+    const { handle, pglite } = await newHandle()
+    try {
+      const baselineSql = fs.readFileSync(path.join(root, 'sql', 'postgres', 'baseline.sql'), 'utf8')
+      await handle.exec(baselineSql)
+      await ensurePostgresBaselineRegistered(handle)
+      await runPostgresPatchups(handle)
+
+      const app = express()
+      mountHealthRoutes(app, { database: handle })
+      const server = app.listen(0)
+      await new Promise((resolve) => server.on('listening', resolve))
+      const base = `http://127.0.0.1:${server.address().port}`
+      const ready = await fetch(`${base}/api/health/ready`)
+      expect(ready.status).toBe(200)
+      expect((await ready.json()).schemaVersion).toBe(43)
+
+      const first = await handle.prepare(
+        'SELECT version, name, checksum FROM schema_migrations WHERE version BETWEEN 38 AND 43 ORDER BY version'
+      ).all()
+      expect(first.map((row) => row.name)).toEqual([
+        'mutation_verdict_pg', 'deferred_submissions_pg', 'deferred_retry_cols_pg', 'generic_run_sides_pg',
+        'promotion_provider_fields_removed_pg', 'experience_feedback_pg',
+      ])
+      await runPostgresPatchups(handle)
+      expect(await handle.prepare(
+        'SELECT version, name, checksum FROM schema_migrations WHERE version BETWEEN 38 AND 43 ORDER BY version'
+      ).all()).toEqual(first)
+
+      await handle.prepare('UPDATE schema_migrations SET checksum=? WHERE version=38').run('tampered')
+      await expect(runPostgresPatchups(handle)).rejects.toThrow(/v38.*name\/checksum mismatch/)
+      expect((await handle.prepare('SELECT checksum FROM schema_migrations WHERE version=38').get()).checksum)
+        .toBe('tampered')
+      const unhealthy = await fetch(`${base}/api/health/ready`)
+      expect(unhealthy.status).toBe(503)
+      expect((await unhealthy.json()).checks).toContainEqual(
+        expect.objectContaining({ name: 'migration:v38', ok: false })
+      )
+      server.close()
+    } finally {
+      await pglite.close()
     }
   })
 })

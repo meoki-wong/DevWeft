@@ -1,11 +1,11 @@
 /**
- * server.js — agent-workflow-platform 服务器入口（SQLite + MCP 协议，多租户）
+ * server.js — devweft 服务器入口（SQLite + MCP 协议，多租户）
  * 端点：
  *   POST/GET/DELETE /mcp        MCP 协议（IDE 接入）
  *   POST /api/report            verify.sh 验证结果上报
  *   GET  /api/health            健康检查（service setup and monitoring）
  *   GET  /api/rules-version     规范版本（L0 一致性检查用）
- *   POST /api/deploy            自部署：git pull + pm2 restart agent-workflow-platform
+ *   POST /api/deploy            自部署：git pull + pm2 restart devweft
  */
 import express from 'express'
 import crypto from 'node:crypto'
@@ -39,6 +39,8 @@ import {
   recordAuditEvent,
 } from './audit/index.js'
 import { mountTestingRoutes } from './testing/routes.js'
+import { resolveBlobUploadBase } from './testing/blob-store-env.js'
+import { inspectLocalBlobStore, probeRemoteBlobStore } from './testing/blob-health.js'
 import { reconcileRuns } from './testing/leases.js'
 import { createBackgroundOwner } from './db/background-owner.js'
 import { isStandbyControlPlane } from './db/standby.js'
@@ -188,7 +190,7 @@ const TOOL_NEEDS_REPO = new Set([
 
 async function createServer(sessionCtx = {}) {
   const server = new McpServer(
-    { name: 'agent-workflow-platform', version: '1.0.0' },
+    { name: 'devweft', version: PKG_VERSION },
     { instructions: await buildBootstrapInstructions(sessionCtx) }
   )
   // harness 先注册：部分 IDE 工具目录/搜索只索引前若干个工具，把入口工具排前降低「搜不到 harness_start」概率
@@ -207,6 +209,8 @@ async function createServer(sessionCtx = {}) {
 // ─── buildApp：组装完整 Express 应用（路由+中间件+子路由挂载），不启动定时器/监听 ───
 // 副作用（对账定时器、SSE 桥、listen、mTLS）全部在 start()——测试用 buildApp() 拿 app。
 export function buildApp() {
+const nodeRole = isStandbyControlPlane() ? 'standby' : 'primary'
+const pm2ProcessName = nodeRole === 'standby' ? 'devweft-standby' : 'devweft'
 const app = express()
 app.use(express.json({ limit: '50mb' }))
 
@@ -253,7 +257,11 @@ app.use(express.static(path.join(__dirname, 'public'), {
 mountAuditRoutes(app)
 mountDashboardApi(app)
 mountTestingDashboard(app)
-mountTestingRoutes(app, { tlsRequired: Boolean(runnerTlsCert && runnerTlsKey) })
+mountTestingRoutes(app, {
+  blobRoot: process.env.AWP_BLOB_ROOT || path.join(__dirname, 'data', 'blobs'),
+  disableBlobRoutes: nodeRole === 'standby',
+  tlsRequired: Boolean(runnerTlsCert && runnerTlsKey),
+})
 
 // 任务存在性 + 是否非终态检查（API 门禁复用，替代 CI 的执行点）
 const TERMINAL = new Set(['DONE', 'ABORTED'])
@@ -431,9 +439,9 @@ app.post('/mcp', async (req, res) => {
     HARNESS_GATED_TOOLS.has(toolName) &&
     (!activeSession || !activeSession.seenHarness)
       ? 'MCP bootstrap required: first call harness_start (new task) or harness_status (resume). ' +
-        'These tools ARE registered on server awp-ai (verify via tools/list; exact names: harness_start, harness_status, harness_advance). ' +
-        '若 IDE 工具面板搜不到：请断开并重连 awp-ai MCP（或强制刷新工具列表），然后用「精确名称」直接调用 harness_start，禁止模糊搜索后降级普通开发。' +
-        ' Business AGENTS.md is bootstrap only.'
+        'These tools ARE registered on server DevWeft (verify via tools/list; exact names: harness_start, harness_status, harness_advance). ' +
+        'If an IDE tool panel cannot find them, refresh or reconnect the DevWeft MCP server and call the exact tool name. ' +
+        'Follow repository-local instructions for code style, tests, and security.'
       : null
   // 任务负责人 / 经验作者一律归到 MCP 连接 username（禁止 AI 写自己的名字）。
   // 连接未带 username 时降级为 agent:<client> 占位（2026-09-26 决策）：归属仍统一、可追踪，不打断存量客户端。
@@ -781,7 +789,7 @@ app.post('/message', async (req, res) => {
             type: 'text',
             text:
               'MCP bootstrap required: first call harness_start (new task) or harness_status (resume). ' +
-              'Tools exist on server awp-ai — exact names harness_start / harness_status. ' +
+              'Tools exist on server DevWeft — exact names harness_start / harness_status. ' +
               '重连 MCP 后按精确名调用，禁止模糊搜索后直接降级普通开发。',
           }],
           isError: true,
@@ -1043,7 +1051,7 @@ app.get('/api/dashboard/flywheel', async (req, res) => {
   })
 })
 
-// ─── 自部署端点（本地一键触发：git pull + pm2 restart agent-workflow-platform）──
+// ─── 自部署端点（本地一键触发：git pull + pm2 restart devweft）──
 // 只重启控制面进程；绝不重启全部（否则会重启 8787 网关，违背「网关不随业务发版重启」）
 // 流程：pull 成功才重启；依赖变化先 npm ci；先响应再延迟重启，避免响应随进程一起被杀
 const execFile = promisify(execFileCb)
@@ -1075,7 +1083,7 @@ app.post('/api/deploy', async (req, res) => {
     spawn('sh', ['-c', [
       'export PATH="$PATH:/usr/local/bin:/usr/bin:/opt/homebrew/bin:$HOME/.npm-global/bin"',
       '[ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"',
-      'sleep 1 && pm2 restart agent-workflow-platform',
+      `sleep 1 && pm2 restart ${pm2ProcessName}`,
     ].join('\n')], { detached: true, stdio: 'ignore' }).unref()
   } catch (err) {
     console.error(`[${new Date().toLocaleTimeString()}] ⚠ 部署失败：${err.message}`)
@@ -1084,7 +1092,35 @@ app.post('/api/deploy', async (req, res) => {
 })
 
 // 轻量健康检查：/api/health/live + /api/health/ready（与 /api/health 全量计数互补）
-mountHealthRoutes(app, { database: db })
+mountHealthRoutes(app, {
+  database: db,
+  nodeRole,
+  executionMode: nodeRole === 'standby'
+    ? 'disabled'
+    : (String(process.env.AWP_RUNNER_BACKEND || '').toLowerCase() === 'local'
+      ? 'local-process'
+      : (process.env.AWP_HYPERV_ENABLED === 'true' ? 'hyperv' : 'disabled')),
+  getBlobStorage: async () => {
+    if (nodeRole === 'standby') {
+      let linksPrimaryUrl = null
+      try {
+        const row = await db.prepare('SELECT base_url FROM links WHERE is_primary = 1 LIMIT 1').get()
+        linksPrimaryUrl = row?.base_url || null
+      } catch { /* links may not be configured yet */ }
+      if (!process.env.AWP_BLOB_BASE_URL && !process.env.AWP_PRIMARY_BASE_URL && !linksPrimaryUrl) {
+        return probeRemoteBlobStore(null)
+      }
+      const uploadBase = resolveBlobUploadBase(process.env, linksPrimaryUrl)
+      return probeRemoteBlobStore(uploadBase)
+    }
+    return inspectLocalBlobStore(process.env.AWP_BLOB_ROOT || path.join(__dirname, 'data', 'blobs'))
+  },
+  ...(nodeRole === 'primary' && DB_DIALECT === 'postgres' ? {
+    getStandbyUploadEndpoint: () => probeRemoteBlobStore(
+      `http://127.0.0.1:${Number(process.env.AWP_BLOB_PORT || 8792)}`
+    ),
+  } : {}),
+})
 
 
 return app
@@ -1098,7 +1134,7 @@ let _readyBoot = null
 try {
   _readyBoot = await startReadinessBootstrap({ port: PORT, host: '0.0.0.0' })
 } catch (e) {
-  console.error(`[agent-workflow-platform] 就绪端口绑定失败(${PORT})：${e.message}`)
+  console.error(`[devweft] 就绪端口绑定失败(${PORT})：${e.message}`)
   process.exit(1)
 }
 try {
@@ -1109,7 +1145,7 @@ try {
   })
 } catch (e) {
   try { await _readyBoot.close() } catch { /* ignore */ }
-  console.error(`[agent-workflow-platform] 启动数据库连接最终失败，退出以便 pm2 重启：${e.message}`)
+  console.error(`[devweft] 启动数据库连接最终失败，退出以便 pm2 重启：${e.message}`)
   process.exit(1)
 }
 // 库就绪：释放 bootstrap 端口，交由完整 app 正式监听（buildApp 及后台调度为同步装配，间隙亚秒级）
@@ -1136,15 +1172,15 @@ function startBackground() {
 
   // 立即：注册表 reseed + 重启对账 + 超时清扫（接管当刻即执行一轮，随后进入周期）
   ;(async () => {
-    try { await reseedSuiteRegistry() } catch (e) { console.error(`[agent-workflow-platform] reseed 失败: ${e.message}`) }
+    try { await reseedSuiteRegistry() } catch (e) { console.error(`[devweft] reseed 失败: ${e.message}`) }
     try {
       const report = await reconcileRuns(db)
-      console.log(`[agent-workflow-platform] 接管对账: requeued=${report.requeuedRuns.length} expiredLeases=${report.expiredLeases.length} canceled=${report.canceledRuns.length}`)
-    } catch (err) { console.error(`[agent-workflow-platform] 接管对账失败: ${err.message}`) }
+      console.log(`[devweft] 接管对账: requeued=${report.requeuedRuns.length} expiredLeases=${report.expiredLeases.length} canceled=${report.canceledRuns.length}`)
+    } catch (err) { console.error(`[devweft] 接管对账失败: ${err.message}`) }
     try {
       const stale = await sweepStaleTasks()
-      if (stale.closed) console.log(`[agent-workflow-platform] 接管任务超时清扫: ABORTED ${stale.closed} 条（>${stale.maxAgeDays} 天未推进）`)
-    } catch (err) { console.error(`[agent-workflow-platform] 接管超时清扫失败: ${err.message}`) }
+      if (stale.closed) console.log(`[devweft] 接管任务超时清扫: ABORTED ${stale.closed} 条（>${stale.maxAgeDays} 天未推进）`)
+    } catch (err) { console.error(`[devweft] 接管超时清扫失败: ${err.message}`) }
   })()
 
   // 周期：对账 + 心跳清扫 + 超时清扫（30s）
@@ -1154,8 +1190,8 @@ function startBackground() {
       await reconcileRuns(db)
       await sweepWorkerHeartbeats(db)
       const stale = await sweepStaleTasks()
-      if (stale.closed) console.log(`[agent-workflow-platform] 任务超时清扫: ABORTED ${stale.closed}`)
-    } catch (err) { console.error(`[agent-workflow-platform] sweep 失败: ${err.message}`) }
+      if (stale.closed) console.log(`[devweft] 任务超时清扫: ABORTED ${stale.closed}`)
+    } catch (err) { console.error(`[devweft] sweep 失败: ${err.message}`) }
   }, 30 * 1000))
 
   // 每日 05:00 例行清理（自续约；fire 前复验所有权，避免极窄重叠窗口双跑）
@@ -1167,10 +1203,10 @@ function startBackground() {
       try {
         const res = await dailySweepUnfinishedTasks()
         console.log(
-          `[agent-workflow-platform] 🌅 每日05:00任务清理: 未完成 ${res.swept} 个，已结束 ${res.stopped} 个` +
+          `[devweft] 🌅 每日05:00任务清理: 未完成 ${res.swept} 个，已结束 ${res.stopped} 个` +
             (res.swept ? `（${res.results.filter((r) => r.ok).map((r) => `${r.repo}/${r.taskId}`).join(', ')}）` : '')
         )
-      } catch (err) { console.error(`[agent-workflow-platform] 每日05:00任务清理失败: ${err.message}`) }
+      } catch (err) { console.error(`[devweft] 每日05:00任务清理失败: ${err.message}`) }
       scheduleDailySweep()
     }, delay)
     if (bgDayTimer && typeof bgDayTimer.unref === 'function') bgDayTimer.unref()
@@ -1188,10 +1224,10 @@ function startBackground() {
         if (String(process.env.AWP_NIGHTLY_REGRESSION || 'on') !== 'off') {
           const r = await runNightlyRegression()
           console.log(
-            `[agent-workflow-platform] 🌙 夜间全量回归: ${r.ok ? `已下单 ${r.taskId} submission=${r.submissionId} units=${(r.requiredUnits || []).join(',')}` : `失败 ${r.code}: ${r.detail || ''}`}`
+            `[devweft] 🌙 夜间全量回归: ${r.ok ? `已下单 ${r.taskId} submission=${r.submissionId} units=${(r.requiredUnits || []).join(',')}` : `失败 ${r.code}: ${r.detail || ''}`}`
           )
         }
-      } catch (err) { console.error(`[agent-workflow-platform] 夜间回归失败: ${err.message}`) }
+      } catch (err) { console.error(`[devweft] 夜间回归失败: ${err.message}`) }
       scheduleNightly()
     }, delay)
     if (bgNightTimer && typeof bgNightTimer.unref === 'function') bgNightTimer.unref()
@@ -1248,9 +1284,9 @@ function startBackground() {
             if (!live.has(id)) lastRunStatus.delete(id)
           }
         }
-      } catch (err) { console.error(`[agent-workflow-platform] run-sse poll 失败: ${err.message}`) }
+      } catch (err) { console.error(`[devweft] run-sse poll 失败: ${err.message}`) }
     }, RUN_POLL_MS))
-    console.log(`[agent-workflow-platform] run 状态 SSE 桥已启动（${RUN_POLL_MS}ms）`)
+    console.log(`[devweft] run 状态 SSE 桥已启动（${RUN_POLL_MS}ms）`)
   }
 }
 
@@ -1261,7 +1297,7 @@ function stopBackground() {
   bgTimers.length = 0
   if (bgDayTimer) { try { clearTimeout(bgDayTimer) } catch { /* ignore */ } bgDayTimer = null }
   if (bgNightTimer) { try { clearTimeout(bgNightTimer) } catch { /* ignore */ } bgNightTimer = null }
-  console.log('[agent-workflow-platform] 后台任务已停止（失去所有权 / 下线）')
+  console.log('[devweft] 后台任务已停止（失去所有权 / 下线）')
 }
 
 const bgOwner = createBackgroundOwner({
@@ -1270,7 +1306,7 @@ const bgOwner = createBackgroundOwner({
   intervalMs: BG_INTERVAL_MS,
   onAcquire: () => { startBackground() },
   onRelease: () => { stopBackground() },
-  log: (m) => console.log(`[agent-workflow-platform] ${m}`),
+  log: (m) => console.log(`[devweft] ${m}`),
 })
 bgOwner.start()
 // 进程退出：停轮询（同步部分）；会话锁依靠 PG 后端断连自动释放，另一台 ≤20s 内自动接管
@@ -1285,9 +1321,9 @@ setInterval(() => {
 }, 10 * 60 * 1000).unref()
 
 app.listen(PORT, () => {
-  console.log(`[agent-workflow-platform] listening on http://0.0.0.0:${PORT}`)
-  console.log(`[agent-workflow-platform] 看板: http://0.0.0.0:${PORT}/dashboard.html（总览 / 经验库 / 调用流 / 任务 / 知识库）`)
-  console.log('[agent-workflow-platform] MCP: POST/GET/DELETE /mcp | audit: GET /api/audit/stream | harness: GET /api/harness/status POST /api/harness/advance')
+  console.log(`[devweft] listening on http://0.0.0.0:${PORT}`)
+  console.log(`[devweft] 看板: http://0.0.0.0:${PORT}/dashboard.html（总览 / 经验库 / 调用流 / 任务 / 知识库）`)
+  console.log('[devweft] MCP: POST/GET/DELETE /mcp | audit: GET /api/audit/stream | harness: GET /api/harness/status POST /api/harness/advance')
 })
 
 // ─── Runner mTLS 监听（§14.8 workerMtls；配置证书后 header 回退自动关闭）───
@@ -1302,7 +1338,7 @@ if (runnerTlsCert && runnerTlsKey) {
     rejectUnauthorized: false,
   }, app)
   tlsServer.listen(tlsPort, () => {
-    console.log(`[agent-workflow-platform] runner mTLS listening on https://0.0.0.0:${tlsPort}`)
+    console.log(`[devweft] runner mTLS listening on https://0.0.0.0:${tlsPort}`)
   })
 }
 }

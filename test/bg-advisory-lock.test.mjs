@@ -32,8 +32,7 @@ let pgAvailable = false
 const maybe = pgAvailable ? it : it.skip
 
 describe('§5 后台咨询锁（pg_try_advisory_lock）', () => {
-  it('acquireSessionClient 取到的连接能跑查询（持连不归还）', async () => {
-    if (!pgAvailable) return
+  maybe('acquireSessionClient 取到的连接能跑查询（持连不归还）', async () => {
     const handle = await createPostgresHandle({ connectionString: MAINT_URL, max: 1 })
     const client = await handle.acquireSessionClient()
     const r = await client.query('SELECT 1 AS one')

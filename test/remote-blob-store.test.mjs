@@ -75,14 +75,31 @@ describe('createRemoteBlobStore', () => {
       .toBe(createHash('sha256').update(buf).digest('hex'))
   })
 
-  it('4) 非 2xx 抛错并携带主机返回正文（明细可诊断）', async () => {
+  it('4) 保留远端快照校验错误码和明细', async () => {
     const fetchImpl = async () => ({
       ok: false,
       status: 400,
-      text: async () => JSON.stringify({ error: { code: 'SNAPSHOT_HASH_MISMATCH', detail: 'expected sha256=aa size=3, actual sha256=bb size=2' } }),
+      json: async () => ({ error: { code: 'SNAPSHOT_HASH_MISMATCH', detail: 'expected sha256=aa size=3, actual sha256=bb size=2' } }),
     })
     const store = createRemoteBlobStore('http://127.0.0.1:8791', 'tok', { fetchImpl })
-    await expect(store.writeUpload('u-1', buf)).rejects.toThrow(/SNAPSHOT_HASH_MISMATCH/)
+    await expect(store.writeUpload('u-1', buf)).rejects.toMatchObject({
+      code: 'SNAPSHOT_HASH_MISMATCH',
+      detail: 'expected sha256=aa size=3, actual sha256=bb size=2',
+    })
+  })
+
+  it('5) 把远端 5xx 和连接失败归类为可恢复的 503 错误', async () => {
+    const unavailable = createRemoteBlobStore('https://primary.example', 'tok', {
+      fetchImpl: async () => ({ ok: false, status: 503, json: async () => ({ error: { code: 'TEMPORARY' } }) }),
+    })
+    await expect(unavailable.prepare({ kind: 'git-bundle', sha256: 'a'.repeat(64), size: 3 }))
+      .rejects.toMatchObject({ code: 'BLOB_STORE_UNAVAILABLE', httpStatus: 503 })
+
+    const disconnected = createRemoteBlobStore('https://primary.example', 'tok', {
+      fetchImpl: async () => { throw new Error('secret connection details') },
+    })
+    await expect(disconnected.prepare({ kind: 'git-bundle', sha256: 'a'.repeat(64), size: 3 }))
+      .rejects.toMatchObject({ code: 'BLOB_STORE_UNAVAILABLE', httpStatus: 503 })
   })
 })
 
@@ -102,7 +119,7 @@ describe('resolveBlobUploadBase（备用机上传地址决策）', () => {
   })
 
   it('3) 无 env 时 links.primary 非 loopback 才可用；loopback 被剔除', () => {
-    expect(resolveBlobUploadBase({}, 'http://127.0.0.1:8791')).toBe('http://127.0.0.1:8791')
+    expect(resolveBlobUploadBase({}, 'https://primary.example:8792')).toBe('https://primary.example:8792')
     // links 存主机视角地址，在备用机上 127.0.0.1 指备用机自己，必须剔除
     expect(resolveBlobUploadBase({}, 'http://127.0.0.1:8791')).toBe('http://127.0.0.1:8792')
     expect(resolveBlobUploadBase({}, 'http://localhost:8791')).toBe('http://127.0.0.1:8792')
@@ -162,6 +179,29 @@ describe('createBlobStoreForEnv 项目根路径（10-09 token 误报回归）', 
       repoRoot: tmpRoot,
     })
     expect(store.isRemote).toBe(true)
+  })
+
+  it('备用机模式：无显式 URL 时从共享数据库主链路解析上传地址', async () => {
+    const tmpRoot = mkdtempSync(path.join(tmpdir(), 'awp-root-link-fallback-'))
+    mkdirSync(path.join(tmpRoot, 'data'), { recursive: true })
+    writeFileSync(path.join(tmpRoot, 'data', 'bootstrap-admin.token'), 'tok-123')
+    const primaryUrl = 'https://primary.example:8792'
+    const fakeDb = {
+      prepare: (sql) => {
+        expect(sql).toBe('SELECT base_url FROM links WHERE is_primary = 1 LIMIT 1')
+        return { get: async () => ({ base_url: primaryUrl }) }
+      },
+    }
+    const { fetchImpl, calls } = mkFetch()
+    const store = await createBlobStoreForEnv(fakeDb, {
+      env: { AWP_STANDBY: '1' },
+      repoRoot: tmpRoot,
+      fetchImpl,
+    })
+
+    expect(store.isRemote).toBe(true)
+    await store.prepare({ kind: 'test-spec', sha256: 'c'.repeat(64), size: 3 })
+    expect(calls[0].url).toBe(`${primaryUrl}/v1/blobs:prepare`)
   })
 
   it('备用机模式：repoRoot 下无 token 时抛出与生产一致的错误文案', async () => {

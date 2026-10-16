@@ -15,11 +15,16 @@ import { previewSuitePlan } from '../testing/suite-plan.js'
 import { documentSha256 } from '../contracts/version.mjs'
 import { acquireLease, acceptLease, completeLease } from '../testing/leases.js'
 import { generateEd25519Pem, publicKeySha256, verifyRunSpecSignature } from '../testing/signing.js'
-import { executeAcceptedRunInProcess } from '../runner/host-worker/index.mjs'
+import { executeAcceptedRunLocally } from '../runner/local/index.mjs'
 import { evaluateNewGate } from '../harness/testing-gate.js'
 import { mergeSuiteCases } from '../testing/suite-selector.js'
+import { explainTestRun } from '../testing/explain.js'
+import { mountTestingRoutes } from '../testing/routes.js'
+import express from 'express'
 import { ApiError } from '../testing/errors.js'
 import { utcNow } from '../testing/ids.js'
+
+process.env.AWP_REPO_PLATFORM_CONFIG = 'data/repo-platform.example.json'
 
 async function memdb() {
   const db = new Database(join(mkdtempSync(join(tmpdir(), 'awp-m2-')), 't.db'))
@@ -67,7 +72,6 @@ async function submitS(db, boot, { size = 'S', taskId = 'T-S-1' } = {}) {
       targetRemoteId: boot.remoteId,
       targetRef: 'refs/heads/stage',
       targetCommitOid: OID,
-      mr: null,
     },
     bundle: { sha256: sha, size: payload.length },
     suiteRequest: { mode: 'auto', candidateRevisionIds: [], candidateApprovalIds: [] },
@@ -80,6 +84,7 @@ describe('M2 suite registry and static lease', () => {
   it('locks stable+repo overlays and rejects case-key conflicts', async () => {
     const db = await memdb()
     const boot = await bootstrapTestingPlatform(db, {
+      slug: 'example-app',
       remoteUrl: 'https://gitlab.example/Web/demo-app.git',
       rotateToken: true,
     })
@@ -105,11 +110,10 @@ describe('M2 suite registry and static lease', () => {
       requestedSides: 'auto',
     })
     expect([...preview.requiredCaseKeys].sort()).toEqual([
-      'test:smoke/fun',
-      'test:smoke/store',
+      'test:smoke/admin',
+      'test:smoke/web',
       'test:static/eslint',
       'test:static/hard-rules',
-      'test:static/translation-fixture',
       'test:static/vitest',
     ])
     expect(() => mergeSuiteCases([
@@ -135,6 +139,7 @@ describe('M2 suite registry and static lease', () => {
   it('runs S formal static:na through lease + guest sidecar + observe gate', async () => {
     const db = await memdb()
     const boot = await bootstrapTestingPlatform(db, {
+      slug: 'example-app',
       remoteUrl: 'https://gitlab.example/Web/demo-app.git',
       rotateToken: true,
     })
@@ -146,9 +151,23 @@ describe('M2 suite registry and static lease', () => {
     expect(run.unit).toBe('static')
     expect(run.side).toBe('na')
     expect(run.status).toBe('queued')
+    const explained = await explainTestRun(db, run.run_id, { repoSlug: 'example-app' })
+    expect(explained.selection.lane).toMatchObject({ unit: 'static', side: 'na', reasonCode: 'VALUE_FROZEN_ON_RUN' })
+    expect(explained.selection.group).toMatchObject({ requiredUnits: ['static:na'], reasonCode: 'REQUIRED_BY_RUN_GROUP' })
+    expect(explained.selection.suite.selectedCases.map((item) => item.caseKey).sort()).toEqual([
+      'test:static/eslint', 'test:static/hard-rules', 'test:static/vitest',
+    ])
+    expect(explained.selection.suite.lockedCases.find((item) => item.caseKey === 'test:smoke/web'))
+      .toMatchObject({ selectedForRun: false, runSelectionReasonCode: 'FILTERED_BY_RUN_UNIT_AND_SIDE' })
+    await expect(explainTestRun(db, run.run_id, { repoSlug: 'other-repo' }))
+      .rejects.toMatchObject({ code: 'CROSS_REPO_REFERENCE' })
+    expect(explained.environment.executionProfile).toMatchObject({
+      profileRevisionId: expect.any(String), reasonCode: 'PROFILE_FROZEN_BY_BINDING',
+    })
+    expect((await db.prepare('SELECT status FROM test_runs WHERE run_id=?').get(run.run_id)).status).toBe('queued')
 
     const worker = await registerWorker(db, { certificateThumbprint: randomBytes(32).toString('hex'), hostname: 'poc-worker' })
-    const reservation = await acquireLease(db, worker)
+    const reservation = await acquireLease(db, worker, { unit: 'static' })
     expect(reservation.runId).toBe(run.run_id)
     expect(reservation.attempt).toBe(1)
     const guest = generateEd25519Pem()
@@ -171,25 +190,47 @@ describe('M2 suite registry and static lease', () => {
     writeFileSync(join(runDir, 'workspace', 'ok.js'), 'const n = 1\n')
     const plan = await db.prepare('SELECT canonical_lock_json FROM suite_plans WHERE suite_plan_id=?').get(created.suitePlanId)
     const cases = JSON.parse(plan.canonical_lock_json).cases
-    const sidecar = await executeAcceptedRunInProcess({ db, worker, reservation, accepted, cases, runDir, guestPrivateKeyPem: guest.privateKeyPem, blobRoot: blobDir })
+    const sidecar = await executeAcceptedRunLocally({ db, worker, reservation, accepted, cases, runDir, guestPrivateKeyPem: guest.privateKeyPem, blobRoot: blobDir })
     expect(sidecar.result.status).toBe('passed')
+    expect(sidecar.execution).toMatchObject({ backend: 'local-process', isolation: 'host-process' })
+    expect(sidecar.result.checks.every((check) => check.execution?.backend === 'local-process')).toBe(true)
     expect(sidecar.result.checks.map((c) => c.caseKey).sort()).toEqual([
       'test:static/eslint',
       'test:static/hard-rules',
-      'test:static/translation-fixture',
       'test:static/vitest',
     ])
 
     const done = await db.prepare('SELECT status FROM test_runs WHERE run_id=?').get(run.run_id)
     expect(done.status).toBe('passed')
     const evaluation = await evaluateNewGate(db, {
-      repoSlug: 'demo-app',
+      repoSlug: 'example-app',
       taskId: 'T-S-1',
       size: 'S',
       gateBindingId: created.bindingId,
       expectedTaskRevision: created.taskRevision,
     })
     expect(evaluation.wouldBlock).toBe(false)
+
+    const app = express()
+    app.use(express.json())
+    mountTestingRoutes(app, { database: db, blobRoot: blobDir })
+    const api = app.listen(0)
+    try {
+      const response = await fetch(`http://127.0.0.1:${api.address().port}/v1/test-runs/${run.run_id}/explain`, {
+        headers: { Authorization: `Bearer ${boot.token}` },
+      })
+      expect(response.status).toBe(200)
+      const body = await response.json()
+      expect(body.data.runId).toBe(run.run_id)
+      expect(body.data.selection.suite.reasonCode).toBe('LOCKED_IN_SUITE_PLAN')
+      const missing = await fetch(`http://127.0.0.1:${api.address().port}/v1/test-runs/missing/explain`, {
+        headers: { Authorization: `Bearer ${boot.token}` },
+      })
+      expect(missing.status).toBe(404)
+      expect((await missing.json()).error.code).toBe('RUN_NOT_FOUND')
+    } finally {
+      await new Promise((resolve) => api.close(resolve))
+    }
     expect(taskInstanceId).toBeTruthy()
     rmSync(blobDir, { recursive: true, force: true })
     rmSync(runDir, { recursive: true, force: true })

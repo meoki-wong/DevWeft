@@ -13,6 +13,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createBlobStore, createRemoteBlobStore } from './blobs.js'
 import { isStandbyControlPlane } from '../db/standby.js'
+import { createBlobBackendAdapter } from '../extensions/adapters.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // testing/ 只距项目根一层（本文件在 testing/blob-store-env.js）——曾误写 '..','..' 导致
@@ -41,7 +42,11 @@ export function resolveBlobUploadBase(env = process.env, linksPrimaryUrl = null)
  * 演练停控制面不断单。
  * opts.env / opts.repoRoot 可注入（单测用）；生产默认 process.env 与项目根。
  */
-export async function createBlobStoreForEnv(db, { env = process.env, repoRoot = DEFAULT_REPO_ROOT } = {}) {
+export async function createBlobStoreForEnv(db, {
+  env = process.env,
+  repoRoot = DEFAULT_REPO_ROOT,
+  fetchImpl = globalThis.fetch,
+} = {}) {
   if (isStandbyControlPlane(env)) {
     let linksPrimaryUrl = null
     try {
@@ -55,7 +60,7 @@ export async function createBlobStoreForEnv(db, { env = process.env, repoRoot = 
       throw new Error('备用机提交云端测试需要 data/bootstrap-admin.token（用于上传 bundle 到主机）')
     }
     process.stdout.write(`[blob-store-env] 备用机模式：工件将上传到主机 ${uploadBase}\n`)
-    return createRemoteBlobStore(uploadBase, token)
+    return createBlobBackendAdapter('http-primary', createRemoteBlobStore(uploadBase, token, { fetchImpl }))
   }
-  return createBlobStore(path.join(repoRoot, 'data', 'blobs'))
+  return createBlobBackendAdapter('local-filesystem', createBlobStore(path.join(repoRoot, 'data', 'blobs')))
 }

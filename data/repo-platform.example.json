@@ -1,11 +1,25 @@
 {
   "repos": {
-    "demo-app": {
-      "workspaceEnv": "AWP_REPO_PATH_DEMO_APP",
-      "casePrefix": "demo-app",
-      "suiteSlug": "demo-app",
-      "defaultSides": [],
-      "smoke": {},
+    "example-app": {
+      "workspaceEnv": "AWP_REPO_PATH_EXAMPLE_APP",
+      "workspacePath": "examples/example-app",
+      "casePrefix": "example-app",
+      "suiteSlug": "example-app",
+      "defaultSides": ["web", "admin"],
+      "smoke": {
+        "web": {
+          "build": ["build:web"],
+          "entry": "index",
+          "outDir": "web",
+          "readySelector": "[data-test=\"app\"]"
+        },
+        "admin": {
+          "build": ["build:admin"],
+          "entry": "index",
+          "outDir": "admin",
+          "readySelector": "[data-test=\"app\"]"
+        }
+      },
       "enabled": true
     }
   }

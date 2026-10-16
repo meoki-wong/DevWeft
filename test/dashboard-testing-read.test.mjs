@@ -24,7 +24,17 @@ vi.mock('../scanner/zipscan.mjs', () => ({ readZipCentralEntries: (buffer) => JS
 vi.mock('../testing/test-specs.js', () => ({ getTestSpec: isolated.forbidden, listTestSpecs: isolated.forbidden,
   transitionTestSpec: isolated.forbidden, normalizeRepoId: isolated.forbidden, getE2eInjectMode: isolated.forbidden,
   setE2eInjectMode: isolated.forbidden, E2E_INJECT_MODES: [] }))
-vi.mock('../audit/index.js', () => ({ recordAuditEvent: isolated.forbidden, queryAuditEvents: isolated.forbidden }))
+vi.mock('../audit/index.js', () => ({ recordAuditEvent: async (evt) => {
+  const createdAt = new Date().toISOString()
+  isolated.conn.pragma('query_only = OFF')
+  let info
+  try {
+    info = isolated.conn.prepare(`INSERT INTO audit_events(event_type, run_id, repo, author, status, detail, payload_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(evt.eventType, evt.runId || null, evt.repo || null, evt.author || null,
+      evt.status || 'ok', evt.detail || null, JSON.stringify(evt.payload || {}), createdAt)
+  } finally { isolated.conn.pragma('query_only = ON') }
+  return { id: Number(info.lastInsertRowid), ...evt, created_at: createdAt }
+}, queryAuditEvents: isolated.forbidden }))
 vi.mock('../harness/testing-gate.js', () => ({ setRepoGateMode: isolated.forbidden, GATE_MODES: [], isCloudTestingEnabled: isolated.forbidden,
   getRepoGateMode: async (db, repo) => (await db.prepare('SELECT m.mode FROM repo_gate_modes m JOIN repositories r ON r.repo_id=m.repo_id WHERE r.slug=?').get(repo))?.mode || 'legacy',
   getTaskAcceptance: async () => [], evaluateAcCoverage: async () => ({ applicable: false, covered: [], missing: [] }), describeMutationVerification: async () => null }))
@@ -48,14 +58,14 @@ import { mountDashboardApi } from '../dashboard/api.js'
 import { utf8Tail } from '../dashboard/testing-read-model.js'
 
 let handlers
-async function call(route, { params = {}, query = {} } = {}) {
+async function call(route, { method = 'GET', params = {}, query = {}, body = {} } = {}) {
   const res = { statusCode: 200, headers: {}, body: null,
     status(code) { this.statusCode = code; return this },
     json(body) { this.body = body; return this },
     send(body) { this.body = body; return this },
     setHeader(key, value) { this.headers[key] = value; return this },
   }
-  await handlers.get(route)({ params, query }, res)
+  await handlers.get(`${method} ${route}`)({ params, query, body }, res)
   return res
 }
 function seed(sql) {
@@ -81,9 +91,12 @@ beforeEach(() => {
     CREATE TABLE gate_loops(repo TEXT, task_id TEXT, iteration INTEGER, state TEXT, max_iterations INTEGER, needs_human INTEGER);
     CREATE TABLE test_submissions(submission_id TEXT, task_instance_id TEXT, binding_id TEXT, status TEXT, created_at TEXT, finished_at TEXT, expected_task_revision INTEGER, principal_id TEXT);
     CREATE TABLE run_groups(run_group_id TEXT, submission_id TEXT, kind TEXT, required_units_json TEXT, gate_eligible INTEGER);
-    CREATE TABLE test_runs(run_id TEXT, run_group_id TEXT, purpose TEXT, unit TEXT, side TEXT, status TEXT, terminal_reason TEXT, next_attempt INTEGER, started_at TEXT, finished_at TEXT, coverage_complete INTEGER, created_at TEXT, total_ms INTEGER, report_json TEXT, payload_json TEXT);
+    CREATE TABLE test_runs(run_id TEXT, run_group_id TEXT, purpose TEXT, unit TEXT, side TEXT, status TEXT, terminal_reason TEXT, next_attempt INTEGER, started_at TEXT, finished_at TEXT, coverage_complete INTEGER, created_at TEXT, total_ms INTEGER, report_json TEXT, payload_json TEXT, repo_id TEXT, task_instance_id TEXT);
     CREATE TABLE workers(worker_id TEXT, hostname TEXT);
     CREATE TABLE run_attempts(run_id TEXT, attempt INTEGER, status TEXT, started_at TEXT, finished_at TEXT, heartbeat_at TEXT, error_code TEXT, error_detail TEXT, image_id TEXT, steps_json TEXT, worker_id TEXT);
+    CREATE TABLE test_failures(failure_id TEXT, repo_id TEXT, failure_phase TEXT, failure_class TEXT, case_key TEXT, error_signature TEXT, occurrence_count INTEGER, status TEXT, first_seen_at TEXT, last_seen_at TEXT);
+    CREATE TABLE experiences(experience_id TEXT, repo_id TEXT, title TEXT, content TEXT, source_type TEXT, source_id TEXT, failure_fingerprint TEXT, confidence REAL, tags_json TEXT, reviewed_at TEXT, created_at TEXT);
+    CREATE TABLE audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT, run_id TEXT, repo TEXT, author TEXT, status TEXT, detail TEXT, payload_json TEXT, created_at TEXT);
     CREATE TABLE artifacts(artifact_id TEXT, run_id TEXT, attempt INTEGER, size INTEGER, artifact_truncated INTEGER, scan_state TEXT, archive_sha256 TEXT, expire_at TEXT, deleted_at TEXT, created_at TEXT);
     INSERT INTO repositories VALUES ('r1','repo1'),('r2','repo2');
     INSERT INTO repo_gate_modes VALUES ('r1','observe'),('r2','enforce_s');
@@ -93,14 +106,19 @@ beforeEach(() => {
     INSERT INTO test_submissions VALUES ('s-old','old','b-old','passed','2026-01-01',NULL,1,NULL),('s','current','b','failed','2026-01-02',NULL,7,NULL),('s-foreign','foreign','b-foreign','passed','2026-01-03',NULL,4,NULL);
     INSERT INTO run_groups VALUES ('g-old','s-old','formal','["smoke:web"]',1),('g','s','formal','["smoke:web","static:na"]',1),('g-foreign','s-foreign','formal','[]',1),('candidate','s','candidate','[]',0);
     INSERT INTO test_runs(run_id,run_group_id,purpose,unit,side,status,next_attempt,created_at,report_json) VALUES
-      ('run','g','gate','smoke','web','failed',2,'2026-01-02','{"attempt":1,"checks":[{"caseKey":"business","status":"failed"}]}'),
+      ('run','g','gate','smoke','web','failed',2,'2026-01-02','{"attempt":1,"checks":[{"caseKey":"business","status":"failed","detail":"expect response 500"}]}'),
       ('mutation','candidate','mutation','smoke','web','active',1,'2026-01-02','{}');
     INSERT INTO run_attempts(run_id,attempt,status) VALUES ('run',1,'failed'),('run',2,'active');
+    UPDATE test_runs SET repo_id='r1', task_instance_id='current' WHERE run_id='run';
+    INSERT INTO test_failures VALUES ('f1','r1','smoke','product','business','same response failure',3,'open','2026-01-01','2026-01-02');
+    INSERT INTO test_failures VALUES ('f2','r2','smoke','product','business','foreign response failure',8,'open','2026-01-01','2026-01-02');
+    INSERT INTO experiences VALUES ('e1','r1','修复错误响应','核对 API 状态码断言','test_failure','f1',NULL,0.9,'["product","business"]','2026-01-02','2026-01-02');
+    INSERT INTO experiences VALUES ('e2','r2','跨仓经验','不应返回','test_failure','f2',NULL,0.9,'["product","business"]','2026-01-02','2026-01-02');
   `)
   isolated.conn.pragma('query_only = ON')
   handlers = new Map()
   // 假 app：读路由登记到 handlers；写路由（含链路 DELETE）仅需存在即可（本测试不触发）
-  const app = { get: (path, handler) => handlers.set(path, handler), post: () => {}, delete: () => {} }
+  const app = { get: (path, handler) => handlers.set(`GET ${path}`, handler), post: (path, handler) => handlers.set(`POST ${path}`, handler), delete: () => {} }
   mountTestingDashboard(app)
   mountDashboardApi(app)
 })
@@ -110,6 +128,7 @@ const byTask = '/api/testing/by-task/:taskId'
 const logs = '/api/testing/runs/:runId/logs'
 const log = '/api/testing/runs/:runId/log'
 const timeline = '/api/testing/runs/:runId/timeline'
+const diagnostics = '/api/testing/runs/:runId/diagnostics'
 const request = (query = {}, runId = 'run') => ({ params: { runId }, query })
 
 describe('只读路由新旧契约', () => {
@@ -160,6 +179,33 @@ describe('只读路由新旧契约', () => {
     expect(result.steps.every((step) => Object.hasOwn(step, 'attempt') && step.source)).toBe(true)
     expect(result.steps.find((step) => step.caseKey === 'business')).toMatchObject({ attempt: 1, source: 'synthesized', at: null })
     expect(((await call(timeline, request({}, 'absent')))).statusCode).toBe(404)
+  })
+  it('失败诊断只匹配同仓历史；建议确认/忽略产生可读取的审计反馈', async () => {
+    const first = await call(diagnostics, request())
+    expect(first.body).toMatchObject({ ok: true, runId: 'run', repo: 'repo1', phase: expect.any(String) })
+    expect(first.body.failureAnalysis).toMatchObject({ hasFailure: true, category: 'product', firstCaseKey: 'business' })
+    expect(first.body.similarFailures).toHaveLength(1)
+    expect(first.body.similarExperiences.map((item) => item.experienceId)).toEqual(['e1'])
+    const suggestion = first.body.suggestions[0]
+    expect(suggestion).toMatchObject({ action: 'inspect-product', feedback: null, evidence: { runId: 'run', source: 'stored_run_report' } })
+
+    const saved = await call(`${diagnostics}/:suggestionId/feedback`, {
+      method: 'POST', params: { runId: 'run', suggestionId: suggestion.suggestionId },
+      body: { action: 'confirm', note: '日志中有对应的 500 响应', author: 'reviewer' },
+    })
+    expect(saved).toMatchObject({ statusCode: 200, body: { ok: true, action: 'confirm' } })
+    const reread = await call(diagnostics, request())
+    expect(reread.body.suggestions[0].feedback).toMatchObject({ action: 'confirm', author: 'reviewer', note: '日志中有对应的 500 响应' })
+
+    const ignored = await call(`${diagnostics}/:suggestionId/feedback`, {
+      method: 'POST', params: { runId: 'run', suggestionId: suggestion.suggestionId }, body: { action: 'ignore' },
+    })
+    expect(ignored.body.action).toBe('ignore')
+    expect((await call(diagnostics, request())).body.suggestions[0].feedback.action).toBe('ignore')
+    expect((await call(`${diagnostics}/:suggestionId/feedback`, {
+      method: 'POST', params: { runId: 'run', suggestionId: 'unknown' }, body: { action: 'confirm' },
+    })).statusCode).toBe(400)
+    expect((await call(diagnostics, request({}, 'absent'))).statusCode).toBe(404)
   })
 })
 

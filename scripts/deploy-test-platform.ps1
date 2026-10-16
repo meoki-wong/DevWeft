@@ -11,6 +11,7 @@ param(
   [string]$GitRemoteUrl = $env:AWP_GIT_REMOTE_URL,
   [string]$RunnerRoot,
   [string]$SwitchName = 'awp-isolated',
+  [string]$VmNetworkCidr = $env:AWP_VM_NETWORK_CIDR,
   [switch]$SkipHyperV,
   [switch]$SkipNpmCi,
   [switch]$SkipPm2,
@@ -24,41 +25,54 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $Root
+. (Join-Path $PSScriptRoot 'Deploy.Common.ps1')
+. (Join-Path $PSScriptRoot 'windows\isolated-network.ps1')
 
-function Import-DeployEnv([string]$Path) {
-  if (-not (Test-Path $Path)) { return }
-  Get-Content -LiteralPath $Path | ForEach-Object {
-    $line = $_.Trim()
-    if (-not $line -or $line.StartsWith('#')) { return }
-    $eq = $line.IndexOf('=')
-    if ($eq -lt 1) { return }
-    $name = $line.Substring(0, $eq).Trim()
-    $val = $line.Substring($eq + 1).Trim()
-    Set-Item -Path "Env:$name" -Value $val
-  }
+Import-DevWeftDeploymentEnv -Root $Root -Optional
+if (-not $PSBoundParameters.ContainsKey('ControlPort') -and $env:AWP_CONTROL_PORT) {
+  Assert-DevWeftPort -Name 'AWP_CONTROL_PORT' -Value $env:AWP_CONTROL_PORT
+  $ControlPort = [int]$env:AWP_CONTROL_PORT
 }
-
-Import-DeployEnv (Join-Path $Root 'data\deploy.env')
-Import-DeployEnv (Join-Path $Root 'scripts\deploy.env')
+if (-not $PSBoundParameters.ContainsKey('BrokerPort') -and $env:AWP_BROKER_PORT) {
+  Assert-DevWeftPort -Name 'AWP_BROKER_PORT' -Value $env:AWP_BROKER_PORT
+  $BrokerPort = [int]$env:AWP_BROKER_PORT
+}
+if ($env:AWP_GATEWAY_PORT) { Assert-DevWeftPort -Name 'AWP_GATEWAY_PORT' -Value $env:AWP_GATEWAY_PORT; $GatewayPort = [int]$env:AWP_GATEWAY_PORT }
+else { $GatewayPort = 8787 }
+if ($env:AWP_BLOB_PORT) { Assert-DevWeftPort -Name 'AWP_BLOB_PORT' -Value $env:AWP_BLOB_PORT; $BlobPort = [int]$env:AWP_BLOB_PORT }
+else { $BlobPort = 8792 }
 if (-not $PSBoundParameters.ContainsKey('SwitchName') -and $env:AWP_VM_SWITCH_NAME) { $SwitchName = $env:AWP_VM_SWITCH_NAME }
+if (-not $VmNetworkCidr) { $VmNetworkCidr = if ($env:AWP_VM_NETWORK_CIDR) { $env:AWP_VM_NETWORK_CIDR } else { '192.168.250.0/24' } }
+$network = Assert-PrivateIpv4Cidr $VmNetworkCidr
 if (-not $RunnerRoot) {
   $RunnerRoot = if ($env:AWP_RUNNER_ROOT) { $env:AWP_RUNNER_ROOT } else { Join-Path $Root 'data\runner' }
 }
 $env:AWP_RUNNER_ROOT = $RunnerRoot
+$BlobRoot = if ($env:AWP_BLOB_ROOT) { $env:AWP_BLOB_ROOT } else { Join-Path $Root 'data\blobs' }
+$env:AWP_BLOB_ROOT = $BlobRoot
 if (-not $GitRemoteUrl) { $GitRemoteUrl = $env:AWP_GIT_REMOTE_URL }
 $dbDialect = if ($env:AWP_DB_DIALECT) { $env:AWP_DB_DIALECT } else { 'sqlite' }
 if ($dbDialect -notin @('sqlite', 'postgres')) { throw "Unsupported AWP_DB_DIALECT: $dbDialect" }
 $pgMode = if ($env:AWP_PG_MODE) { $env:AWP_PG_MODE } else { 'external' }
 if ($pgMode -notin @('external', 'embedded')) { throw "Unsupported AWP_PG_MODE: $pgMode (use external or embedded)." }
 if ($dbDialect -eq 'postgres' -and -not $env:AWP_PG_URL -and $pgMode -ne 'embedded') {
-  throw 'Set AWP_PG_URL in scripts\deploy.env or select AWP_PG_MODE=embedded for a local single-host PostgreSQL instance.'
+  throw 'Set AWP_PG_URL in data\deploy.env or select AWP_PG_MODE=embedded for a local single-host PostgreSQL instance.'
 }
-$ProxyIp = '192.168.250.1'
+$ProxyIp = $network.ProxyIp
 $ProxyPort = 443
-$GuestCidr = '192.168.250.0/24'
-$BlockPorts = @(8787, 8788, 8791, 8792)
+$GuestCidr = $VmNetworkCidr
+$BlockPorts = @($GatewayPort, $BrokerPort, $ControlPort, $BlobPort) | Sort-Object -Unique
 $env:AWP_VM_SWITCH_NAME = $SwitchName
+$env:AWP_VM_NETWORK_CIDR = $GuestCidr
 $env:AWP_DB_DIALECT = $dbDialect
+$env:AWP_STANDBY = '0'
+$hyperVSetting = if ($env:AWP_HYPERV_ENABLED) { $env:AWP_HYPERV_ENABLED.Trim().ToLowerInvariant() } else { 'false' }
+if ($hyperVSetting -notin @('true', 'false')) { throw 'AWP_HYPERV_ENABLED must be true or false.' }
+$runnerBackend = if ($env:AWP_RUNNER_BACKEND) { $env:AWP_RUNNER_BACKEND.Trim().ToLowerInvariant() } else { 'hyperv' }
+if ($runnerBackend -notin @('hyperv', 'local')) { throw 'AWP_RUNNER_BACKEND must be hyperv or local.' }
+$HyperVEnabled = ($hyperVSetting -eq 'true') -and (-not $SkipHyperV)
+$SkipHyperV = -not $HyperVEnabled
+$env:AWP_HYPERV_ENABLED = $HyperVEnabled.ToString().ToLowerInvariant()
 
 function Write-Step([string]$msg) { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
 
@@ -98,21 +112,10 @@ function Write-DeployEnv([string]$Path, [string[]]$ManagedLines) {
   Set-Content -LiteralPath $Path -Value (@($preserved) + @($ManagedLines)) -Encoding ascii
 }
 
-function Unlock-SecretFile([string]$Path) {
-  if (-not (Test-Path $Path)) { return }
-  $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-  $old = $ErrorActionPreference
-  $ErrorActionPreference = 'Continue'
-  icacls $Path /grant "${user}:(F)" | Out-Null
-  attrib -R $Path | Out-Null
-  Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-  $ErrorActionPreference = $old
-}
-
 function Stop-RepoNode {
   Write-Step '释放本仓库 Node 占用（避免 npm ci EPERM）'
   if (Get-Command pm2 -ErrorAction SilentlyContinue) {
-    cmd /c "pm2 delete devweft awp-secret-broker >nul 2>&1" | Out-Null
+    cmd /c "pm2 delete devweft awp-secret-broker awp-host-worker >nul 2>&1" | Out-Null
   }
   $rootNorm = $Root.ToLowerInvariant()
   Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
@@ -153,19 +156,24 @@ try {
   $preflight.hypervisorPresent = $false
 }
 Write-Host "HypervisorPresent=$($preflight.hypervisorPresent)"
-if (-not $isAdmin) {
-  Write-Host '当前非管理员：控制面仍可部署；交换机 / 防火墙 / VM PoC 将跳过。建议右键「以管理员身份运行」。' -ForegroundColor Yellow
-  $SkipHyperV = $true
-}
-if (-not $SkipHyperV -and -not $preflight.hypervisorPresent) {
-  Write-Host '未检测到可用 Hyper-V：部署控制面和基础服务，跳过隔离 worker 主机配置。' -ForegroundColor Yellow
-  $SkipHyperV = $true
+if ($HyperVEnabled) {
+  if (-not $isAdmin) { throw 'AWP_HYPERV_ENABLED=true requires an elevated PowerShell. Set it to false for a control-plane-only deployment.' }
+  if (-not $preflight.hypervisorPresent) { throw 'AWP_HYPERV_ENABLED=true but Hyper-V is not active. Enable Hyper-V, restart Windows, then rerun deployment.' }
+  Write-Step 'Hyper-V network read-only preflight'
+  $networkArgs = @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'windows\ensure-isolated-network.ps1'),
+    '-SwitchName', $SwitchName, '-ProxyIp', $ProxyIp, '-ProxyPort', "$ProxyPort",
+    '-GuestCidr', $GuestCidr, '-PreflightOnly', '-BlockPorts'
+  ) + @($BlockPorts | ForEach-Object { "$_" })
+  $code = Invoke-Native 'powershell' $networkArgs
+  if ($code -ne 0) { throw "Hyper-V network preflight failed exit $code. Resolve the conflict and retry; no network changes were made." }
+} else {
+  Write-Host 'Hyper-V worker is disabled (AWP_HYPERV_ENABLED=false). Control-plane services can run without a Windows VM image.' -ForegroundColor Yellow
 }
 
+Assert-DevWeftRuntime
 $nodeCmd = Get-Command node -ErrorAction Stop
-$ver = (& node -v).TrimStart('v')
-$major = [int]($ver.Split('.')[0])
-if ($major -lt 22) { throw "需要 Node 22+，当前 v$ver" }
+$ver = (& node -p 'process.versions.node').Trim()
 $preflight.node = "v$ver"
 Write-Host "node v$ver  ($($nodeCmd.Source))"
 Invoke-Native 'node' @('.\scripts\ensure-ps1-utf8bom.mjs') | Out-Null
@@ -218,8 +226,7 @@ if ($dbDialect -eq 'postgres' -and $pgMode -eq 'embedded') {
   if ($env:AWP_PG_DATABASE) { $setupArgs += @('-DatabaseName', $env:AWP_PG_DATABASE) }
   $code = Invoke-Native 'powershell' $setupArgs
   if ($code -ne 0) { throw "Local PostgreSQL setup failed exit $code." }
-  Import-DeployEnv (Join-Path $Root 'data\deploy.env')
-  Import-DeployEnv (Join-Path $Root 'scripts\deploy.env')
+  Import-DevWeftDeploymentEnv -Root $Root -Optional
   $env:AWP_DB_DIALECT = 'postgres'
   $env:AWP_RUNNER_ROOT = $RunnerRoot
 }
@@ -251,35 +258,6 @@ if (-not (Test-Path $trust)) {
 }
 Get-ChildItem (Join-Path $Root 'secret-broker\dev-certs\*.key') | ForEach-Object { Protect-SecretFile $_.FullName }
 
-if (-not $SkipHyperV) {
-  Write-Step 'Hyper-V 工作目录与隔离交换机'
-  foreach ($p in @("$RunnerRoot\images", "$RunnerRoot\attempts", "$RunnerRoot\scratch", "$RunnerRoot\certs")) {
-    New-Item -ItemType Directory -Force -Path $p | Out-Null
-    Write-Host "OK $p"
-  }
-  $srcCerts = Join-Path $Root 'secret-broker\dev-certs'
-  foreach ($n in @('ca.crt', 'worker.crt', 'worker.key', 'worker-id.txt', 'trust.json')) {
-    $src = Join-Path $srcCerts $n
-    $dst = Join-Path "$RunnerRoot\certs" $n
-    if (Test-Path $src) {
-      Unlock-SecretFile $dst
-      Copy-Item -Force $src $dst
-    }
-  }
-  Protect-SecretFile (Join-Path $RunnerRoot 'certs\worker.key')
-
-  if (-not $isAdmin) { throw 'Hyper-V worker host configuration requires an elevated shell.' }
-  Write-Host "配置隔离网络：switch=$SwitchName host=$ProxyIp guest=$GuestCidr proxyPort=$ProxyPort"
-  $networkArgs = @(
-    '-NoProfile', '-ExecutionPolicy', 'Bypass',
-    '-File', (Join-Path $PSScriptRoot 'windows\ensure-isolated-network.ps1'),
-    '-SwitchName', $SwitchName, '-ProxyIp', $ProxyIp, '-ProxyPort', "$ProxyPort",
-    '-GuestCidr', $GuestCidr, '-BlockPorts'
-  ) + @($BlockPorts | ForEach-Object { "$_" })
-  $code = Invoke-Native 'powershell' $networkArgs
-  if ($code -ne 0) { throw "Isolated Hyper-V network setup failed exit $code." }
-}
-
 Write-Step 'Database initialization + bootstrap-admin'
 $env:AWP_CONTROL_PORT = "$ControlPort"
 $env:AWP_BROKER_PORT = "$BrokerPort"
@@ -294,17 +272,19 @@ if ($RotateToken) { $bootArgs += '--rotate' }
 $code = Invoke-Native 'node' $bootArgs
 if ($code -ne 0) { throw "bootstrap failed exit $code" }
 Protect-SecretFile (Join-Path $Root 'data\bootstrap-admin.token')
-$gatewayPort = if ($env:AWP_GATEWAY_PORT) { $env:AWP_GATEWAY_PORT } else { '8787' }
-$blobPort = if ($env:AWP_BLOB_PORT) { $env:AWP_BLOB_PORT } else { '8792' }
 $envLines = @(
   "AWP_DB_DIALECT=$dbDialect",
   "AWP_PG_MODE=$pgMode",
   "AWP_CONTROL_PORT=$ControlPort",
-  "AWP_GATEWAY_PORT=$gatewayPort",
-  "AWP_BLOB_PORT=$blobPort",
+  "AWP_GATEWAY_PORT=$GatewayPort",
+  "AWP_BLOB_PORT=$BlobPort",
+  "AWP_BLOB_ROOT=$BlobRoot",
   "AWP_BROKER_PORT=$BrokerPort",
   "AWP_RUNNER_ROOT=$RunnerRoot",
-  "AWP_VM_SWITCH_NAME=$SwitchName"
+  "AWP_VM_SWITCH_NAME=$SwitchName",
+  "AWP_VM_NETWORK_CIDR=$GuestCidr",
+  "AWP_HYPERV_ENABLED=$hyperVSetting",
+  "AWP_RUNNER_BACKEND=$runnerBackend"
 )
 if ($dbDialect -eq 'postgres') { $envLines += "AWP_PG_URL=$env:AWP_PG_URL" }
 if ($env:AWP_PG_DATA_DIR) { $envLines += "AWP_PG_DATA_DIR=$env:AWP_PG_DATA_DIR" }
@@ -312,15 +292,51 @@ if ($env:AWP_PG_PORT) { $envLines += "AWP_PG_PORT=$env:AWP_PG_PORT" }
 if ($env:AWP_PG_DATABASE) { $envLines += "AWP_PG_DATABASE=$env:AWP_PG_DATABASE" }
 if ($GitRemoteUrl) { $envLines += "AWP_GIT_REMOTE_URL=$GitRemoteUrl" }
 Write-DeployEnv (Join-Path $Root 'data\deploy.env') $envLines
-Write-DeployEnv (Join-Path $Root 'scripts\deploy.env') $envLines
 if ($dbDialect -eq 'postgres') {
   $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-  foreach ($configPath in @((Join-Path $Root 'data\deploy.env'), (Join-Path $Root 'scripts\deploy.env'))) {
-    $old = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    icacls $configPath /inheritance:r /grant:r "${user}:(M)" | Out-Null
-    $ErrorActionPreference = $old
+  $configPath = Join-Path $Root 'data\deploy.env'
+  $old = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  icacls $configPath /inheritance:r /grant:r "${user}:(M)" | Out-Null
+  $ErrorActionPreference = $old
+}
+
+if ($HyperVEnabled) {
+  Write-Step 'Verify signed Golden runner image before host changes'
+  $goldenPath = Join-Path $RunnerRoot 'images\golden.vhdx'
+  $code = Invoke-Native 'node' @('.\scripts\verify-runner-image.mjs', '--vhdx', $goldenPath)
+  if ($code -ne 0) { throw 'Runner image validation failed. Publish and activate a signed VHDX/SBOM before enabling the Hyper-V worker.' }
+
+  Write-Step 'Hyper-V runner files and isolated network'
+  foreach ($p in @("$RunnerRoot\images", "$RunnerRoot\attempts", "$RunnerRoot\scratch", "$RunnerRoot\certs")) {
+    New-Item -ItemType Directory -Force -Path $p | Out-Null
+    Write-Host "OK $p"
   }
+  $srcCerts = Join-Path $Root 'secret-broker\dev-certs'
+  foreach ($n in @('ca.crt', 'worker.crt', 'worker.key', 'worker-id.txt', 'trust.json')) {
+    $src = Join-Path $srcCerts $n
+    $dst = Join-Path "$RunnerRoot\certs" $n
+    if (-not (Test-Path $src)) { throw "Missing runner certificate source: $src" }
+    if (Test-Path $dst) {
+      $sourceHash = (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+      $targetHash = (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash
+      if ($sourceHash -ne $targetHash) { throw "RUNNER_CERT_CONFLICT: $dst already contains different data and was preserved. Back it up and reconcile certificates manually before retrying." }
+      Write-Host "reuse $dst"
+    } else {
+      Copy-Item -LiteralPath $src -Destination $dst
+      Write-Host "created $dst"
+    }
+  }
+  Protect-SecretFile (Join-Path $RunnerRoot 'certs\worker.key')
+
+  Write-Host "Configure isolated network: switch=$SwitchName host=$ProxyIp guest=$GuestCidr proxyPort=$ProxyPort"
+  $networkArgs = @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'windows\ensure-isolated-network.ps1'),
+    '-SwitchName', $SwitchName, '-ProxyIp', $ProxyIp, '-ProxyPort', "$ProxyPort",
+    '-GuestCidr', $GuestCidr, '-BlockPorts'
+  ) + @($BlockPorts | ForEach-Object { "$_" })
+  $code = Invoke-Native 'powershell' $networkArgs
+  if ($code -ne 0) { throw "Isolated Hyper-V network setup failed exit $code." }
 }
 
 if ($RunTests) {
@@ -338,6 +354,9 @@ if (-not $SkipPm2) {
     $pm2 = Get-Command pm2 -ErrorAction Stop
   }
   $env:AWP_CONTROL_PORT = "$ControlPort"
+  $env:AWP_GATEWAY_PORT = "$GatewayPort"
+  $env:AWP_BLOB_PORT = "$BlobPort"
+  $env:AWP_BLOB_ROOT = $BlobRoot
   $env:AWP_BROKER_PORT = "$BrokerPort"
   $env:AWP_BROKER_DB = Join-Path $Root 'data\secret-broker.db'
   $env:AWP_BROKER_TLS_CERT = Join-Path $Root 'secret-broker\dev-certs\broker.crt'
@@ -347,6 +366,7 @@ if (-not $SkipPm2) {
 
   Invoke-Native 'pm2' @('delete', 'devweft') | Out-Null
   Invoke-Native 'pm2' @('delete', 'awp-secret-broker') | Out-Null
+  if (-not $HyperVEnabled) { Invoke-Native 'pm2' @('delete', 'awp-host-worker') | Out-Null }
   $code = Invoke-Native 'pm2' @('start', (Join-Path $Root 'ecosystem.config.cjs'), '--update-env')
   if ($code -ne 0) { throw "pm2 start failed exit $code" }
   Invoke-Native 'pm2' @('save') | Out-Null
@@ -391,7 +411,7 @@ if (-not $ok -and -not $SkipPm2) {
 }
 
 $reportedPgMode = if ($dbDialect -eq 'postgres') { $pgMode } else { $null }
-$hyperVConfigured = -not $SkipHyperV
+$hyperVConfigured = $HyperVEnabled
 $goldenImagePresent = Test-Path (Join-Path $RunnerRoot 'images\golden.vhdx')
 $status = [ordered]@{
   ok           = $true
@@ -414,10 +434,10 @@ if (-not $SkipVerify -and -not $SkipPm2) {
   $verifyArgs = @(
     '-NoProfile', '-ExecutionPolicy', 'Bypass',
     '-File', (Join-Path $PSScriptRoot 'verify-test-platform.ps1'),
-    '-Port', "$ControlPort", '-BrokerPort', "$BrokerPort",
+    '-Port', "$ControlPort", '-BrokerPort', "$BrokerPort", '-GatewayPort', "$GatewayPort", '-BlobPort', "$BlobPort",
     '-RunnerRoot', $RunnerRoot, '-SwitchName', $SwitchName
   )
-  if ($SkipHyperV) { $verifyArgs += '-SkipHyperV' }
+  if (-not $HyperVEnabled) { $verifyArgs += '-SkipHyperV' }
   $code = Invoke-Native 'powershell' $verifyArgs
   if ($code -ne 0) { throw "verify-test-platform failed exit $code" }
 }

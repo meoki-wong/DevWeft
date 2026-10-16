@@ -55,11 +55,11 @@ export async function openDbWithRetry(openDbFn, {
       return n
     } catch (e) {
       if (Date.now() >= deadline) {
-        log(`[agent-workflow-platform] openDb 连续失败且超总时限(${maxWaitMs}ms)：${e && e.message}`)
+        log(`[devweft] openDb 连续失败且超总时限(${maxWaitMs}ms)：${e && e.message}`)
         throw e
       }
       const delay = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, Math.min(n, 4)))
-      log(`[agent-workflow-platform] openDb 第 ${n} 次失败：${e && e.message}；${delay}ms 后重试`)
+      log(`[devweft] openDb 第 ${n} 次失败：${e && e.message}；${delay}ms 后重试`)
       await sleep(delay)
     }
   }

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "title": "Example app stable checks",
+  "requiredCapabilities": [],
+  "cases": [
+    { "caseKey": "test:static/eslint", "title": "Source syntax and basic static checks", "tags": ["static", "node"], "protected": true, "replacesCaseKey": null, "requiredCapabilities": [] },
+    { "caseKey": "test:static/hard-rules", "title": "Repository hard rules", "tags": ["static", "policy"], "protected": true, "replacesCaseKey": null, "requiredCapabilities": [] },
+    { "caseKey": "test:static/vitest", "title": "Deterministic unit tests", "tags": ["static", "unit"], "protected": true, "replacesCaseKey": null, "requiredCapabilities": [] }
+  ]
+}

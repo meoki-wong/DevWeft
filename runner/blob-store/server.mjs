@@ -18,6 +18,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import db, { openDb, DB_DIALECT } from '../../db.js'
 import { createBlobStore } from '../../testing/blobs.js'
+import { inspectLocalBlobStore } from '../../testing/blob-health.js'
 import { mountBlobRoutes } from '../../testing/routes.js'
 import { randomUUID } from 'node:crypto'
 
@@ -49,10 +50,30 @@ app.get('/api/health/live', (_req, res) => {
   res.json({ ok: true, service: 'blob-store' })
 })
 
-const blobs = createBlobStore(process.env.AWP_BLOB_ROOT || path.join(root, 'data', 'blobs'))
+const blobRoot = process.env.AWP_BLOB_ROOT || path.join(root, 'data', 'blobs')
+const blobs = createBlobStore(blobRoot)
 mountBlobRoutes(app, { database: db, blobs })
+
+app.get('/api/health/ready', async (_req, res) => {
+  let databaseOk = false
+  try {
+    const result = await db.prepare('SELECT 1 AS one').get()
+    databaseOk = Number(result?.one) === 1
+  } catch { /* returned as a readiness state, without exposing connection details */ }
+  const blobStorage = await inspectLocalBlobStore(blobRoot)
+  const ready = databaseOk && blobStorage.ok
+  const payload = {
+    ok: ready,
+    ready,
+    service: 'blob-store',
+    node: { role: 'primary', executionMode: 'disabled' },
+    database: { ok: databaseOk, dialect: 'postgres' },
+    blobStorage,
+  }
+  res.status(ready ? 200 : 503).json(payload)
+})
 
 app.listen(PORT, () => {
   console.log(`[blob-store] listening on http://0.0.0.0:${PORT}`)
-  console.log('[blob-store] routes: POST /v1/blobs:prepare | PUT /v1/blobs/uploads/:uploadId | GET /api/health/live')
+  console.log('[blob-store] routes: POST /v1/blobs:prepare | PUT /v1/blobs/uploads/:uploadId | GET /api/health/live | GET /api/health/ready')
 })

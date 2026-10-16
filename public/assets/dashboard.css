@@ -1089,3 +1089,15 @@ html[data-theme="dark"] .wf2-lane > .wf2-card.dead:not(:last-child)::after { bor
   0%, 100% { box-shadow: 0 2px 6px -1px rgba(47,111,237,.45), 0 0 0 0 rgba(47,111,237,.3); }
   50% { box-shadow: 0 2px 6px -1px rgba(47,111,237,.45), 0 0 0 6px rgba(47,111,237,0); }
 }
+
+/* Evidence-backed run trend chart; values remain available in the detail table. */
+.trend-card { margin-top: 16px; padding: 16px; }
+.trend-card > .muted { color: var(--muted); font-size: 12px; }
+.trend-bars { display: flex; align-items: end; gap: 6px; min-height: 170px; overflow-x: auto; padding: 12px 4px 0; border-bottom: 1px solid var(--border-2); }
+.trend-bar-item { display: flex; flex: 1 0 28px; min-width: 28px; height: 150px; flex-direction: column; align-items: center; justify-content: end; gap: 5px; color: var(--muted); font-size: 10px; }
+.trend-bar-track { display: flex; width: min(22px, 75%); height: 120px; align-items: end; border-radius: 5px 5px 0 0; background: var(--panel-2); overflow: hidden; }
+.trend-bar-fill { width: 100%; min-height: 0; background: linear-gradient(0deg, var(--green), #55c889); border-radius: 5px 5px 0 0; }
+.trend-stat-grid { margin-bottom: 16px; }
+.trend-card .table-wrap { overflow-x: auto; }
+.trend-card table { min-width: 720px; }
+@media (max-width: 700px) { .trend-card { padding: 12px; } .trend-bars { gap: 3px; } }

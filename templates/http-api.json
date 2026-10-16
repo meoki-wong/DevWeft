@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/meoki-wong/DevWeft/main/schemas/project-config.schema.json",
+  "schemaVersion": 1,
+  "checks": [
+    {
+      "id": "http-api",
+      "name": "HTTP API tests",
+      "command": ["node", "--test", "tests/api"],
+      "timeoutSeconds": 300
+    }
+  ]
+}

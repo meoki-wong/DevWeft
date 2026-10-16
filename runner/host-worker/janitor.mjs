@@ -83,7 +83,7 @@ const entryIsSelf = process.argv[1] && process.argv[1].endsWith('janitor.mjs')
 const launchedByPm2 = process.env.pm_id != null && process.env.pm_exec_path != null
 const wantLoop = process.argv.includes('--loop')
 if (entryIsSelf || launchedByPm2) {
-  const runnerRoot = process.env.AWP_RUNNER_ROOT || 'C:\\awp-runner'
+  const runnerRoot = process.env.AWP_RUNNER_ROOT || join(here, '..', '..', 'data', 'runner')
   const hyperv = process.argv.includes('--hyperv')
   import('../../db.js').then(async ({ default: db, openDb, DB_DIALECT, initDB }) => {
     if (DB_DIALECT === 'sqlite') initDB()

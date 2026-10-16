@@ -10,28 +10,19 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $Root
+. (Join-Path $PSScriptRoot 'Deploy.Common.ps1')
 
-function Import-EnvFile([string]$Path) {
-  if (-not (Test-Path $Path)) { return }
-  Get-Content -LiteralPath $Path | ForEach-Object {
-    $line = $_.Trim()
-    if (-not $line -or $line.StartsWith('#')) { return }
-    $separator = $line.IndexOf('=')
-    if ($separator -lt 1) { return }
-    $name = $line.Substring(0, $separator).Trim()
-    $value = $line.Substring($separator + 1).Trim()
-    Set-Item -Path "Env:$name" -Value $value
-  }
-}
+Import-DevWeftDeploymentEnv -Root $Root -Optional
 
-Import-EnvFile (Join-Path $Root 'data\deploy.env')
-Import-EnvFile (Join-Path $Root 'scripts\deploy.env')
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'preflight.ps1') -Profile primary
+if ($LASTEXITCODE -ne 0) { throw 'Primary-host preflight failed. Review the profile and prerequisite errors above.' }
+
 if ($env:AWP_CONTROL_PORT) { $ControlPort = [int]$env:AWP_CONTROL_PORT }
 if ($env:AWP_GATEWAY_PORT) { $GatewayPort = [int]$env:AWP_GATEWAY_PORT }
 if ($env:AWP_BLOB_PORT) { $BlobPort = [int]$env:AWP_BLOB_PORT }
 if ($env:AWP_BROKER_PORT) { $BrokerPort = [int]$env:AWP_BROKER_PORT }
 if ($env:AWP_DB_DIALECT -and $env:AWP_DB_DIALECT -notin @('sqlite', 'postgres')) { throw 'AWP_DB_DIALECT must be sqlite or postgres.' }
-if ($env:AWP_DB_DIALECT -eq 'postgres' -and -not $env:AWP_PG_URL) { throw 'Set AWP_PG_URL in scripts\deploy.env before starting PostgreSQL-backed services.' }
+if ($env:AWP_DB_DIALECT -eq 'postgres' -and -not $env:AWP_PG_URL) { throw 'Set AWP_PG_URL in data\deploy.env before starting PostgreSQL-backed services.' }
 
 function Test-TcpListen([string]$HostName, [int]$Port, [int]$TimeoutMs = 1000) {
   $client = New-Object System.Net.Sockets.TcpClient
@@ -82,12 +73,35 @@ if ($env:AWP_DB_DIALECT -eq 'postgres') {
 }
 
 $env:AWP_CONTROL_PORT = "$ControlPort"
+$env:AWP_STANDBY = '0'
 $env:AWP_GATEWAY_PORT = "$GatewayPort"
 $env:AWP_BLOB_PORT = "$BlobPort"
 $env:AWP_BROKER_PORT = "$BrokerPort"
 $ecosystem = Join-Path $Root 'ecosystem.config.cjs'
 if (-not (Test-Path (Join-Path $Root 'node_modules'))) { throw 'Dependencies are missing. Run deploy.cmd first.' }
 if (-not (Get-Command pm2 -ErrorAction SilentlyContinue)) { throw 'PM2 is missing. Run deploy.cmd first.' }
+
+$hyperVSetting = if ($env:AWP_HYPERV_ENABLED) { $env:AWP_HYPERV_ENABLED.Trim().ToLowerInvariant() } else { 'false' }
+if ($hyperVSetting -notin @('true', 'false')) { throw 'AWP_HYPERV_ENABLED must be true or false.' }
+$runnerBackend = if ($env:AWP_RUNNER_BACKEND) { $env:AWP_RUNNER_BACKEND.Trim().ToLowerInvariant() } else { 'hyperv' }
+if ($runnerBackend -notin @('hyperv', 'local')) { throw 'AWP_RUNNER_BACKEND must be hyperv or local.' }
+$HyperVEnabled = $hyperVSetting -eq 'true'
+if ($HyperVEnabled -and $runnerBackend -eq 'hyperv') {
+  $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+  if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'AWP_HYPERV_ENABLED=true requires an elevated shell. Start with start-primary.cmd.'
+  }
+  $runnerRoot = if ($env:AWP_RUNNER_ROOT) { $env:AWP_RUNNER_ROOT } else { Join-Path $Root 'data\runner' }
+  $golden = if ($env:AWP_GOLDEN_VHDX) { $env:AWP_GOLDEN_VHDX } else { Join-Path $runnerRoot 'images\golden.vhdx' }
+  & node (Join-Path $Root 'scripts\verify-runner-image.mjs') '--vhdx' $golden
+  if ($LASTEXITCODE -ne 0) { throw 'Runner image verification failed; the VM worker was not started.' }
+  $networkArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'windows\ensure-isolated-network.ps1'),
+    '-BlockPorts', "$GatewayPort", "$BrokerPort", "$ControlPort", "$BlobPort")
+  & powershell.exe @networkArgs
+  if ($LASTEXITCODE -ne 0) { throw 'Isolated network preflight/setup failed; the VM worker was not started.' }
+} elseif ($runnerBackend -ne 'local') {
+  & pm2 delete awp-host-worker 2>$null | Out-Null
+}
 
 $serviceNames = @(& node -e "for (const app of require('./ecosystem.config.cjs').apps) console.log(app.name)")
 if ($LASTEXITCODE -ne 0 -or $serviceNames.Count -eq 0) { throw 'Could not read applications from ecosystem.config.cjs.' }
@@ -117,10 +131,11 @@ if ($SetupAutostart) {
 }
 
 $healthy = $false
+$controlReady = $null
 for ($attempt = 1; $attempt -le 30; $attempt++) {
   try {
-    $response = Invoke-WebRequest -Uri "http://127.0.0.1:$ControlPort/api/health/live" -TimeoutSec 2 -UseBasicParsing
-    if ($response.StatusCode -eq 200) { $healthy = $true; break }
+    $controlReady = Invoke-RestMethod -Uri "http://127.0.0.1:$ControlPort/api/health/ready" -TimeoutSec 2
+    if ($controlReady.ready -and $controlReady.node.role -eq 'primary' -and $controlReady.blobStorage.ok) { $healthy = $true; break }
   } catch { }
   Start-Sleep -Seconds 1
 }
@@ -132,6 +147,19 @@ if (-not $healthy) {
 
 Write-Host "Control plane: http://127.0.0.1:$ControlPort/dashboard.html"
 Write-Host "Gateway:       http://127.0.0.1:$GatewayPort/mcp"
-Write-Host "Blob store:    http://127.0.0.1:$BlobPort"
+if ($env:AWP_DB_DIALECT -eq 'postgres') {
+  $blobReady = $false
+  for ($attempt = 1; $attempt -le 15; $attempt++) {
+    try {
+      $blobHealth = Invoke-RestMethod -Uri "http://127.0.0.1:$BlobPort/api/health/ready" -TimeoutSec 2
+      if ($blobHealth.ready) { $blobReady = $true; break }
+    } catch { }
+    Start-Sleep -Seconds 1
+  }
+  if ($blobReady) { Write-Host "Blob store:    http://127.0.0.1:$BlobPort (ready)" }
+  else { Write-Warning "Primary control plane is ready, but the standby upload endpoint on port $BlobPort is degraded. Check PM2 logs and shared storage; standby submissions will not be ready." }
+} else {
+  Write-Host 'Blob store:    local SQLite mode (served by control plane)'
+}
 Write-Host "Broker port:   $BrokerPort"
 Write-Host 'Primary host services are running. Use pm2 status to inspect process health.'

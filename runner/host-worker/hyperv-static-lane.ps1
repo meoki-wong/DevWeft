@@ -7,6 +7,7 @@ param(
   [Parameter(Mandatory = $true)][string]$GoldenVhdx,
   [Parameter(Mandatory = $true)][string]$PasswordFile,
   [Parameter(Mandatory = $true)][string]$AttemptDir,
+  [string]$RunnerRoot = $(Split-Path -Parent (Split-Path -Parent $GoldenVhdx)),
   [Parameter(Mandatory = $true)][string]$ExpectedVhdxSha256,
   [string]$SwitchName = 'awp-isolated',
   [int]$WaitMinutes = 20,
@@ -193,7 +194,6 @@ try {
   if ($sw.Name -eq 'Default Switch') { throw 'Default Switch' }
 
   Write-Step "差分盘 $diffPath"
-  attrib +R $GoldenVhdx | Out-Null
   # EN-only
   # EN-only
   # EN-only
@@ -209,7 +209,7 @@ try {
   if ($depCacheEnabled -and $Repo -and (Test-Path (Join-Path $inputDir 'dep-cache-lockhash'))) {
     $lockHash = (Get-Content (Join-Path $inputDir 'dep-cache-lockhash') -Raw).Trim()
     if ($lockHash -match '^[a-f0-9]{16}$') {
-      $cacheDir = 'C:\awp-runner\dep-cache'
+      $cacheDir = Join-Path $RunnerRoot 'dep-cache'
       New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
       $cacheLayer = Join-Path $cacheDir ("dep-{0}-{1}.avhdx" -f $Repo, $lockHash)
       if (-not (Test-Path $cacheLayer)) {
@@ -300,7 +300,7 @@ netsh advfirewall firewall add rule name=awp-npm-proxy dir=out action=allow prot
     }
     # EN-only
     # EN-only
-    $pwSrc = 'C:\awp-runner\pw-bundle\node_modules'
+    $pwSrc = Join-Path $RunnerRoot 'pw-bundle\node_modules'
     if (Test-Path (Join-Path $pwSrc 'playwright')) {
       # 官方 expect 位于 playwright/test；不需要也不伪造 @playwright/test 包。
       # 两个包必须来自同一离线 bundle，避免浏览器和 locator 断言跨版本。

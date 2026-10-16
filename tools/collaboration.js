@@ -101,7 +101,7 @@ function registerGenerateRulePr(server) {
       const rows = await db.prepare(`SELECT * FROM experiences WHERE id IN (${placeholders})`).all(...ids)
       if (!rows.length) return { content: [{ type: 'text', text: `未找到经验：${ids.join(', ')}` }] }
       const lines = []
-      lines.push('# 规则固化草稿（由 agent-workflow-platform generate_rule_pr 生成）')
+      lines.push('# 规则固化草稿（由 DevWeft generate_rule_pr 生成）')
       lines.push('')
       lines.push('> 以下条目来自团队经验库，经规则负责人筛选，按固化协议格式整理。')
       lines.push('')

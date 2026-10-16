@@ -30,8 +30,7 @@ export function registerHarnessTools(server) {
     {
       title: '开启 Harness 任务',
       description:
-        'MUST be called for any new coding task (phase=RECEIVE). ' +
-        'Call this first after connecting awp-ai MCP; business AGENTS.md is bootstrap only. ' +
+        'Use this to open a new tracked task (phase=RECEIVE). Resume an unfinished task with harness_status. ' +
         'Returns taskId and harness_status/contextPack. ' +
         'If ok=false task exists, use harness_status to resume instead of starting again.',
       inputSchema: {
@@ -86,7 +85,7 @@ export function registerHarnessTools(server) {
       description:
         'Query phase, allowed next hops, and contextPack (required docs + step instructions). ' +
         'MUST call this before resuming an unfinished task (resumable=true) instead of harness_start. ' +
-        'Follow contextPack over any business-repo docs. ' +
+        'Use contextPack for task-phase and gate state; follow applicable repository instructions for code style, tests, and security. ' +
         'Only phase=DONE allows claiming the task is complete.',
       inputSchema: {
         taskId: z.string().describe('任务 id'),
@@ -107,7 +106,7 @@ export function registerHarnessTools(server) {
         'ONLY legal way to change harness phase (gates validated). Never use task_state to set phase. ' +
         'Requires an active harness session (harness_start/status first). ' +
         'Leaving EXECUTE: pass gateBindingId and expectedTaskRevision from awp_test_run. ' +
-        'On failure, loop via CLRP Remediation Packet; do not claim done until cloud is green. ' +
+        'On failure, follow the remediation packet. Do not claim completion until required configured checks have passed and the task is in its terminal phase. ' +
         'to must be a value from harness_status.allowedTransitions (retrieve/plan/execute/static/smoke/distill/done/aborted). ' +
         'Do not send legacy phase names such as CLASSIFY or EXECUTE.',
       inputSchema: {

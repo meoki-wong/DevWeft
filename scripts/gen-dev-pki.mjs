@@ -1,5 +1,5 @@
 /**
- * Dev/PoC mTLS materials. Node 22 only — does not use Windows PowerShell crypto APIs.
+ * Development mTLS materials. Uses Node crypto APIs and the supported Node 22/24/26 releases.
  * Usage: node scripts/gen-dev-pki.mjs [outDir]
  */
 import {

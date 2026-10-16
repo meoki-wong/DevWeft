@@ -1,0 +1,4 @@
+-- v42: remove unused merge-request tracking columns from promotion proposals.
+-- The removed MockMRClient adapter was never connected to a real service or
+-- required by suite promotion review. Reviewer decisions remain in promotion_reviews.
+-- SQLite/PG application is dialect-aware in testing/migrate.js.

@@ -20,6 +20,7 @@ import {
 } from '../testing/signing.js'
 import { verifyImageOrThrow } from '../runner/host-worker/index.mjs'
 import { canonicalize, documentSha256 } from '../contracts/version.mjs'
+import { DEFAULT_IMAGE_ID } from '../testing/execution-profiles.js'
 
 async function memdb() {
   const db = new Database(join(mkdtempSync(join(tmpdir(), 'awp-img-')), 't.db'))
@@ -62,7 +63,7 @@ describe('M3.1 image lifecycle (canary/active/retired + N-1 rollback)', () => {
       remoteUrl: 'https://gitlab.example/Web/demo-app.git', rotateToken: true,
     })
     const first = await getActiveImage(db)
-    expect(first.image_id).toBe('win2025-pw-node22-20260903.1')
+    expect(first.image_id).toBe(DEFAULT_IMAGE_ID)
 
     // 补丁升级：发布新 image_id（canary 阶段不影响现网绑定）
     const manifest = buildImageManifest({ imageId: 'win2025-pw-node22-20260905.1', vhdxSha256: 'a'.repeat(64) })
@@ -73,16 +74,16 @@ describe('M3.1 image lifecycle (canary/active/retired + N-1 rollback)', () => {
       manifestJson: canonicalize(manifest.document),
       mode: 'canary',
     })
-    expect((await getActiveImage(db)).image_id).toBe('win2025-pw-node22-20260903.1')
+    expect((await getActiveImage(db)).image_id).toBe(DEFAULT_IMAGE_ID)
 
     // canary -> active：旧 active 转 retired（N-1 回退点）
     await promoteImage(db, 'win2025-pw-node22-20260905.1')
     expect((await getActiveImage(db)).image_id).toBe('win2025-pw-node22-20260905.1')
-    expect((await db.prepare('SELECT state FROM runner_images WHERE image_id=?').get('win2025-pw-node22-20260903.1')).state).toBe('retired')
+    expect((await db.prepare('SELECT state FROM runner_images WHERE image_id=?').get(DEFAULT_IMAGE_ID)).state).toBe('retired')
 
     // 回退：retired -> active，当前 active 回到 retired
-    await rollbackImage(db, { toImageId: 'win2025-pw-node22-20260903.1' })
-    expect((await getActiveImage(db)).image_id).toBe('win2025-pw-node22-20260903.1')
+    await rollbackImage(db, { toImageId: DEFAULT_IMAGE_ID })
+    expect((await getActiveImage(db)).image_id).toBe(DEFAULT_IMAGE_ID)
 
     // revoke 后不能被选择
     await revokeImage(db, 'win2025-pw-node22-20260905.1')
@@ -131,25 +132,25 @@ describe('M3.1 signed image manifest and key rotation', () => {
     const vhdxPath = join(dir, 'golden.vhdx')
     writeFileSync(vhdxPath, 'fake-vhdx-bytes')
     const digest = createHash('sha256').update(readFileSync(vhdxPath)).digest('hex')
-    await db.prepare(`UPDATE runner_images SET vhdx_sha256=? WHERE image_id=?`).run(digest, 'win2025-pw-node22-20260903.1')
+    await db.prepare(`UPDATE runner_images SET vhdx_sha256=? WHERE image_id=?`).run(digest, DEFAULT_IMAGE_ID)
     const document = imageManifestDocument({
-      imageId: 'win2025-pw-node22-20260903.1',
+      imageId: DEFAULT_IMAGE_ID,
       vhdxSha256: digest,
       sbomSha256: 'c'.repeat(64),
     })
     const envelope = (await buildSignedImageManifest(db, document)).envelope
     await db.prepare(
       `UPDATE runner_images SET manifest_sha256=?, manifest_json=? WHERE image_id=?`
-    ).run(documentSha256(envelope), canonicalize(envelope), 'win2025-pw-node22-20260903.1')
-    await verifyImageOrThrow(db, await db.prepare('SELECT * FROM runner_images WHERE image_id=?').get('win2025-pw-node22-20260903.1'), vhdxPath)
+    ).run(documentSha256(envelope), canonicalize(envelope), DEFAULT_IMAGE_ID)
+    await verifyImageOrThrow(db, await db.prepare('SELECT * FROM runner_images WHERE image_id=?').get(DEFAULT_IMAGE_ID), vhdxPath)
 
     // 篡改 manifest_json -> IMAGE_CHANGED
     const bad = { ...envelope, document: { ...document, vhdxSha256: 'e'.repeat(64) } }
     await db.prepare(`UPDATE runner_images SET manifest_json=? WHERE image_id=?`)
-      .run(canonicalize(bad), 'win2025-pw-node22-20260903.1')
+      .run(canonicalize(bad), DEFAULT_IMAGE_ID)
 await expect(verifyImageOrThrow(
       db,
-      await db.prepare('SELECT * FROM runner_images WHERE image_id=?').get('win2025-pw-node22-20260903.1'),
+      await db.prepare('SELECT * FROM runner_images WHERE image_id=?').get(DEFAULT_IMAGE_ID),
       vhdxPath,
     )).rejects.toThrow(/IMAGE_CHANGED/)
     rmSync(dir, { recursive: true, force: true })
@@ -164,10 +165,10 @@ await expect(verifyImageOrThrow(
     const vhdxPath = join(dir, 'golden.vhdx')
     writeFileSync(vhdxPath, 'legacy-bytes')
     const digest = createHash('sha256').update(readFileSync(vhdxPath)).digest('hex')
-    const legacyDoc = { schemaVersion: 1, imageId: 'win2025-pw-node22-20260903.1', vhdxSha256: digest, sbomSha256: 'c'.repeat(64) }
+    const legacyDoc = { schemaVersion: 1, imageId: DEFAULT_IMAGE_ID, vhdxSha256: digest, sbomSha256: 'c'.repeat(64) }
     await db.prepare(`UPDATE runner_images SET vhdx_sha256=?, manifest_sha256=?, manifest_json=? WHERE image_id=?`)
-      .run(digest, documentSha256(legacyDoc), canonicalize(legacyDoc), 'win2025-pw-node22-20260903.1')
-    await verifyImageOrThrow(db, await db.prepare('SELECT * FROM runner_images WHERE image_id=?').get('win2025-pw-node22-20260903.1'), vhdxPath)
+      .run(digest, documentSha256(legacyDoc), canonicalize(legacyDoc), DEFAULT_IMAGE_ID)
+    await verifyImageOrThrow(db, await db.prepare('SELECT * FROM runner_images WHERE image_id=?').get(DEFAULT_IMAGE_ID), vhdxPath)
     expect(existsSync(vhdxPath)).toBe(true)
     rmSync(dir, { recursive: true, force: true })
   })

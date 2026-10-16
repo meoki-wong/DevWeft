@@ -67,7 +67,6 @@ async function submitS(db, boot, { taskId = 'T-H-1' } = {}) {
       targetRemoteId: boot.remoteId,
       targetRef: 'refs/heads/stage',
       targetCommitOid: OID,
-      mr: null,
     },
     bundle: { sha256: sha, size: payload.length },
     suiteRequest: { mode: 'auto', candidateRevisionIds: [], candidateApprovalIds: [] },
@@ -214,6 +213,28 @@ describe('M3.2 restart reconciliation', () => {
     expect(runRow.terminal_reason).toBe('canceled')
     expect((await db.prepare('SELECT revoked_at FROM runner_leases WHERE lease_id=?').get(reservation.leaseId)).revoked_at).toBeTruthy()
     void hb
+    rmSync(blobDir, { recursive: true, force: true })
+  })
+
+  it('keeps a canceled run canceled when the local worker releases its lease', async () => {
+    const db = await memdb()
+    const boot = await bootstrapTestingPlatform(db, {
+      remoteUrl: 'https://gitlab.example/Web/demo-app.git', rotateToken: true,
+    })
+    const { created, blobDir } = await submitS(db, boot)
+    const { worker, reservation } = await acceptOnly(db, created)
+    await cancelRun(db, { runId: reservation.runId })
+    await rejectLease(db, worker, reservation.leaseId, {
+      runId: reservation.runId,
+      workerId: worker.worker_id,
+      attempt: reservation.attempt,
+      leaseEpoch: reservation.leaseEpoch,
+      leaseToken: reservation.leaseToken,
+    })
+    expect(await db.prepare('SELECT status, terminal_reason FROM test_runs WHERE run_id=?').get(reservation.runId))
+      .toMatchObject({ status: 'canceled', terminal_reason: 'canceled' })
+    expect(await db.prepare('SELECT status FROM run_attempts WHERE run_id=? AND attempt=?').get(reservation.runId, reservation.attempt))
+      .toMatchObject({ status: 'canceled' })
     rmSync(blobDir, { recursive: true, force: true })
   })
 

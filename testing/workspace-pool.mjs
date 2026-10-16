@@ -3,7 +3,7 @@
  *
  * 背景：submitGateRun 原先直接在多进程共享的 repository workspace上
  *   fetch → reset/clean(ensurePristineWorkspace) → checkout(alignWorkspaceBase) → apply(diff) → snapshot。
- * 主机 direct submit（agent-workflow-platform 进程）、drain（awp-host-worker 进程）与并发 lane 会同时改同一目录，
+ * 主机 direct submit（控制面进程）、drain（host worker 进程）与并发 lane 会同时改同一目录，
  * 互相把 base checkout 到不同 commit → apply 上下文错乱（SOURCE_DIFF_APPLY_FAILED）、快照基线漂移。
  *
  * 方案：每次下单在「显式 base commit」上开一个 detached git worktree，checkout/apply/snapshot 全部在该

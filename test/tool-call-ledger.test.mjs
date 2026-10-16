@@ -109,7 +109,7 @@ describe('tool_calls 账本（§4/§16）', () => {
     expect(row.response_text && row.response_text.length > 0).toBe(true)
     const parsed = JSON.parse(row.response_text)
     expect(parsed.ok).toBe(true)
-    expect(countRows(callId)).resolves.toBe(1)
+    await expect(countRows(callId)).resolves.toBe(1)
   })
 
   it('2) 同 call_id 已 finished → 回放，不重复推进 tasks.phase', async () => {
@@ -134,7 +134,7 @@ describe('tool_calls 账本（§4/§16）', () => {
     expect(afterReplay).toBe(afterFirst) // 回放绝不重复执行：phase 与首次一致
     expect(JSON.stringify(replay)).toBe(JSON.stringify(first)) // 回放与首次正文一致
     expect(rowFirst.state).toBe('finished')
-    expect(countRows(callId)).resolves.toBe(1) // 只一行
+    await expect(countRows(callId)).resolves.toBe(1) // 只一行
   })
 
   it('3) 同 call_id 仍 started → -32002 CALL_IN_PROGRESS，不执行工具', async () => {

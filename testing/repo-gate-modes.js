@@ -1,7 +1,7 @@
 /**
  * §23 M6 灰度与推广：repo gate modes (legacy | observe | enforce_s | enforce_all)
  * - legacy: 不审 (默认新 repo)
- * - observe: 全审 advisory，不阻塞 MR (M3 模式)
+ * - observe: run all checks as advisory without blocking delivery (M3 mode)
  * - enforce_s: S 必审 (S 任务 binding 阻塞)
  * - enforce_all: 全审 (M/L/S 都阻塞)
  * 切换：test_admin 角色 + repo administer 权限 + 审计

@@ -8,7 +8,7 @@ import { getRepoPlatformProfile } from './repo-platform.js'
 import { createIdSequencesTable, backfillIdSequence } from '../db/id-sequence.js'
 import { projectPhase, phaseToActivity } from '../harness/activity-plan.js'
 import { ensureRuleArtifactsTable } from './rule-artifacts.js'
-import { applyV31TestSpecsApiType } from './migrate-v31.js'
+import { applyV31TestSpecsApiType, getV31MigrationChecksum } from './migrate-v31.js'
 
 const dir = path.dirname(fileURLToPath(import.meta.url))
 const SCHEMA_SQL = readFileSync(path.join(dir, 'schema-v1.sql'), 'utf8')
@@ -36,14 +36,7 @@ const SCHEMA_V22_SQL = readFileSync(path.join(dir, 'schema-v22.sql'), 'utf8')
 const SCHEMA_V23_SQL = readFileSync(path.join(dir, 'schema-v23.sql'), 'utf8')
 const SCHEMA_V24_SQL = readFileSync(path.join(dir, 'schema-v24.sql'), 'utf8')
 const SCHEMA_V25_SQL = readFileSync(path.join(dir, 'schema-v25.sql'), 'utf8')
-// v26 文件缺失时降级为空迁移，避免旧部署/半同步环境启动即 ReferenceError
-const SCHEMA_V26_SQL = (() => {
-  try {
-    return readFileSync(path.join(dir, 'schema-v26.sql'), 'utf8')
-  } catch {
-    return ''
-  }
-})()
+const SCHEMA_V26_SQL = readFileSync(path.join(dir, 'schema-v26.sql'), 'utf8')
 const SCHEMA_CHECKSUM = createHash('sha256').update(SCHEMA_SQL).digest('hex')
 const SCHEMA_V2_CHECKSUM = createHash('sha256').update(SCHEMA_V2_SQL).digest('hex')
 const SCHEMA_V3_CHECKSUM = createHash('sha256').update(SCHEMA_V3_SQL).digest('hex')
@@ -71,23 +64,95 @@ const SCHEMA_V24_CHECKSUM = createHash('sha256').update(SCHEMA_V24_SQL).digest('
 const SCHEMA_V25_CHECKSUM = createHash('sha256').update(SCHEMA_V25_SQL).digest('hex')
 const SCHEMA_V26_CHECKSUM = createHash('sha256').update(SCHEMA_V26_SQL).digest('hex')
 // v27 意图文件（实际 ALTER 由 applyV27ExperiencesConvergence 按列存在性门控）
-const SCHEMA_V27_SQL = (() => {
-  try {
-    return readFileSync(path.join(dir, 'schema-v27.sql'), 'utf8')
-  } catch {
-    return ''
-  }
-})()
+const SCHEMA_V27_SQL = readFileSync(path.join(dir, 'schema-v27.sql'), 'utf8')
 const SCHEMA_V27_CHECKSUM = createHash('sha256').update(SCHEMA_V27_SQL).digest('hex')
-const SCHEMA_V29_SQL = (() => {
-  try {
-    return readFileSync(path.join(dir, 'schema-v29.sql'), 'utf8')
-  } catch {
-    return ''
-  }
-})()
+const SCHEMA_V29_SQL = readFileSync(path.join(dir, 'schema-v29.sql'), 'utf8')
 const SCHEMA_V41_SQL = readFileSync(path.join(dir, 'schema-v41.sql'), 'utf8')
+const SCHEMA_V42_SQL = readFileSync(path.join(dir, 'schema-v42.sql'), 'utf8')
+const SCHEMA_V43_SQL = readFileSync(path.join(dir, 'schema-v43.sql'), 'utf8')
 const SYSTEM_SUBJECT = 'system:test-platform'
+
+const SQLITE_MIGRATION_NAMES = [
+  'identity_snapshot_binding', 'submissions_runs', 'harness_gate_observe',
+  'suite_registry_leases', 'secret_grants', 'image_manifest_signing_key',
+  'm4_overlays_waivers_promotion', 'm5_failure_experience', 'test_spec_assets',
+  'test_spec_side', 'snapshot_changed_files', 'gate_loop_clrp', 'repo_test_policies',
+  'gate_mode_disabled', 'gate_mode_enforce_ml', 'repo_env_accounts',
+  'repo_default_test_env', 'ac_coverage_category', 'test_spec_review_plugin',
+  'f2p_results', 'platform_settings', 'attempt_steps_timeline',
+  'test_runs_purpose_mutation', 'test_specs_scope', 'accepted_results_multi_attempt',
+  'observability_trace', 'experience_schema_convergence', 'id_sequences',
+  'verify_evidence_fields', 'rule_artifacts', 'test_specs_api_type_rebuild',
+  'task_attachments', 'collaboration_tenant_id', 'phase_activity_names',
+  'repo_runtime_settings', 'tenant_extensions', 'mutation_verdict',
+  'deferred_submissions', 'deferred_retry_cols', 'generic_run_sides',
+  'promotion_provider_fields_removed', 'experience_feedback',
+]
+
+const SQLITE_MIGRATION_CHECKSUMS = [
+  SCHEMA_CHECKSUM, SCHEMA_V2_CHECKSUM, SCHEMA_V3_CHECKSUM, SCHEMA_V4_CHECKSUM,
+  SCHEMA_V5_CHECKSUM, SCHEMA_V6_CHECKSUM, SCHEMA_V7_CHECKSUM, SCHEMA_V8_CHECKSUM,
+  SCHEMA_V9_CHECKSUM, SCHEMA_V10_CHECKSUM, SCHEMA_V11_CHECKSUM, SCHEMA_V12_CHECKSUM,
+  SCHEMA_V13_CHECKSUM, SCHEMA_V14_CHECKSUM, SCHEMA_V15_CHECKSUM, SCHEMA_V16_CHECKSUM,
+  SCHEMA_V17_CHECKSUM, SCHEMA_V18_CHECKSUM, SCHEMA_V19_CHECKSUM, SCHEMA_V20_CHECKSUM,
+  SCHEMA_V21_CHECKSUM, SCHEMA_V22_CHECKSUM, SCHEMA_V23_CHECKSUM, SCHEMA_V24_CHECKSUM,
+  SCHEMA_V25_CHECKSUM, SCHEMA_V26_CHECKSUM, SCHEMA_V27_CHECKSUM, 'id-sequences-v28',
+  createHash('sha256').update(SCHEMA_V29_SQL).digest('hex'), 'rule-artifacts-v30',
+  getV31MigrationChecksum(), 'task-attachments-v32', 'collaboration-tenant-id-v33',
+  'phase-activity-names-v34', 'repo-runtime-settings-v35', 'tenant-extensions-v36',
+  'mutation-verdict-v37', 'deferred-submissions-v39', 'deferred-retry-cols-v40',
+  createHash('sha256').update(SCHEMA_V41_SQL).digest('hex'),
+  createHash('sha256').update(SCHEMA_V42_SQL).digest('hex'),
+  createHash('sha256').update(SCHEMA_V43_SQL).digest('hex'),
+]
+
+const PG_PATCHUP_MANIFEST = [
+  { version: 38, name: 'mutation_verdict_pg', checksum: 'mutation-verdict-pg-v38' },
+  { version: 39, name: 'deferred_submissions_pg', checksum: 'deferred-submissions-pg-v39' },
+  { version: 40, name: 'deferred_retry_cols_pg', checksum: 'deferred-retry-cols-pg-v40' },
+  { version: 41, name: 'generic_run_sides_pg', checksum: 'generic-run-sides-pg-v41' },
+  { version: 42, name: 'promotion_provider_fields_removed_pg', checksum: 'promotion-provider-fields-removed-pg-v42' },
+  { version: 43, name: 'experience_feedback_pg', checksum: 'experience-feedback-pg-v43' },
+]
+
+/** Return the immutable migration ledger contract used by readiness checks and diagnostics. */
+export function getTestingMigrationManifest(dialect = 'sqlite') {
+  if (dialect === 'postgres') {
+    return [
+      { version: null, name: 'postgres_baseline', checksum: 'baseline-v1' },
+      ...PG_PATCHUP_MANIFEST,
+    ]
+  }
+  return SQLITE_MIGRATION_NAMES.map((name, index) => ({
+    version: index < 37 ? index + 1 : index + 2,
+    name,
+    checksum: SQLITE_MIGRATION_CHECKSUMS[index],
+  }))
+}
+
+function migrationChecksumError({ version, name, expected, actual }) {
+  return new Error(
+    `[migrate] schema_migrations v${version} name/checksum mismatch: ` +
+    `expected name ${name}, checksum ${expected || '<missing>'}; found checksum ${actual || '<missing>'}. ` +
+    'Restore the matching migration file or create a forward migration; the ledger was not changed.'
+  )
+}
+
+function validateAppliedMigrationLedger(db, dialect = 'sqlite') {
+  const hasLedger = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()
+  if (!hasLedger) return
+  const expected = new Map(getTestingMigrationManifest(dialect).filter((m) => m.version !== null).map((m) => [m.version, m]))
+  for (const row of db.prepare('SELECT version, name, checksum FROM schema_migrations').all()) {
+    const manifest = expected.get(Number(row.version))
+    if (!manifest) {
+      if (dialect === 'postgres' && row.name === 'postgres_baseline') continue
+      throw migrationChecksumError({ version: row.version, name: row.name, expected: '<known migration>', actual: row.checksum })
+    }
+    if (row.name !== manifest.name || row.checksum !== manifest.checksum) {
+      throw migrationChecksumError({ version: row.version, name: row.name, expected: manifest.checksum, actual: row.checksum })
+    }
+  }
+}
 
 export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
   // 方案 §13.1：postgres 生产句柄不重放 SQLite 迁移（结构由 baseline.sql 承担）；
@@ -95,9 +160,9 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
   // 触发 harness/testing-gate.js 等 SELECT 报 "column ... does not exist" →
   // dashboard 事务被污染 → 用户看板刷新报 "current transaction is aborted"。
   if (process.env.AWP_DB_DIALECT === 'postgres' && (db?.dialect === 'postgres' || db?.pool)) {
-    runPostgresPatchups(db)
-    return
+    return runPostgresPatchups(db)
   }
+  validateAppliedMigrationLedger(db, 'sqlite')
   db.pragma('foreign_keys = ON')
   db.exec(SCHEMA_SQL)
   db.exec(SCHEMA_V2_SQL)
@@ -112,27 +177,10 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
     db.exec(SCHEMA_V6_SQL)
   }
   db.exec(SCHEMA_V7_SQL)
-  // v8 在 evolver 真实 db 中与同名 experiences 表冲突，索引引用缺 repo_id 列；
-  // M5 测试只跑 in-memory db，调用方需在跑前 DROP 旧 trigger 并设置 process.env.MIGRATE_STRICT=1
-  // 这里默认 silent-fail 以保护真 db 控制面（v8 部分字段缺失不影响 M3/M4 业务）
-  for (const t of ['trg_experience_pending_infra_block']) {
-    try { db.exec(`DROP TRIGGER IF EXISTS ${t}`) } catch (_) {}
-  }
-  // v8 幂等：真 db 已应用过 ALTER TABLE test_failures ADD COLUMN reviewed_by 时跳过重复 exec，
-  // 否则每次进程启动都会报「duplicate column name」噪音；内存测试库（无该列）正常执行
-  const v8ReviewedBy = db.prepare(
-    `SELECT 1 FROM pragma_table_info('test_failures') WHERE name = 'reviewed_by'`
-  ).get()
-  if (v8ReviewedBy && !process.env.MIGRATE_STRICT) {
-    // already applied — skip v8 exec
-  } else {
-    try {
-      db.exec(SCHEMA_V8_SQL)
-    } catch (e) {
-      if (process.env.MIGRATE_STRICT) throw e
-      process.stderr.write(`MIGRATE v8: ${e.message}; 真 db 部分跳（控制面 v8 in real db partial）\n`)
-    }
-  }
+  // v8 与旧协作层 experiences 同名但列不同。显式跳过仅依赖新表 repo_id 的索引，
+  // 其余表/列/触发器仍在一个事务中执行；异常向上传播并阻止启动。
+  db.exec('DROP TRIGGER IF EXISTS trg_experience_pending_infra_block')
+  applySchemaV8Compatibly(db)
   // v9（test_specs 测试资产库）：CREATE TABLE IF NOT EXISTS 天然幂等，无条件执行
   db.exec(SCHEMA_V9_SQL)
   // v10（test_specs.side）：ALTER ADD COLUMN 非幂等，仿 v8 按列存在性门控
@@ -228,15 +276,10 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
   `)
   if (SCHEMA_V26_SQL) db.exec(SCHEMA_V26_SQL)
   // platform_settings 双列兼容：v26 可能已只有 value_json；看板/注入/并发读写 value
-  try {
-    const psCols = db.prepare(`PRAGMA table_info(platform_settings)`).all().map((c) => c.name)
-    if (psCols.length && !psCols.includes('value')) {
-      db.exec(`ALTER TABLE platform_settings ADD COLUMN value TEXT`)
-    }
-    if (psCols.length && !psCols.includes('value_json')) {
-      db.exec(`ALTER TABLE platform_settings ADD COLUMN value_json TEXT`)
-    }
-  } catch { /* ignore */ }
+  const psCols = db.prepare(`PRAGMA table_info(platform_settings)`).all().map((c) => c.name)
+  if (!psCols.length) throw new Error('[migrate] platform_settings table missing after v21/v26')
+  if (!psCols.includes('value')) db.exec(`ALTER TABLE platform_settings ADD COLUMN value TEXT`)
+  if (!psCols.includes('value_json')) db.exec(`ALTER TABLE platform_settings ADD COLUMN value_json TEXT`)
   for (const col of ['trace_id', 'submission_id', 'run_id', 'attempt', 'binding_id', 'payload_json', 'phase']) {
     const has = db.prepare(`SELECT 1 FROM pragma_table_info('audit_events') WHERE name=?`).get(col)
     if (!has) {
@@ -255,11 +298,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (26, 'observability_trace', ?, ?)`
       ).run(SCHEMA_V26_CHECKSUM, utcNow())
     } else if (v26.checksum !== SCHEMA_V26_CHECKSUM) {
-      // v26 文件可追加修订（如 platform_settings 双列）：结构已幂等补齐后刷新 checksum，禁止因改文件导致进程起不来
-      db.prepare('UPDATE schema_migrations SET checksum = ? WHERE version = 26').run(SCHEMA_V26_CHECKSUM)
-      console.warn(
-        `[migrate] v26 checksum 已刷新为当前 schema-v26.sql（原 ${String(v26.checksum).slice(0, 12)}… → ${SCHEMA_V26_CHECKSUM.slice(0, 12)}…）`
-      )
+      throw migrationChecksumError({ version: 26, name: SQLITE_MIGRATION_NAMES[25], expected: SCHEMA_V26_CHECKSUM, actual: v26.checksum })
     }
   }
   const apply = db.transaction(() => {
@@ -269,9 +308,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (1, 'identity_snapshot_binding', ?, ?)`
       ).run(SCHEMA_CHECKSUM, utcNow())
     } else if (applied.checksum !== SCHEMA_CHECKSUM) {
-      // 历史版本文件漂移：刷新账本，禁止阻断 PM2 启动（结构侧 DDL 已幂等）
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=1').run(SCHEMA_CHECKSUM)
-      console.warn('[migrate] v1 checksum 已刷新')
+      throw migrationChecksumError({ version: 1, name: SQLITE_MIGRATION_NAMES[0], expected: SCHEMA_CHECKSUM, actual: applied.checksum })
     }
     const v2 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=2').get()
     if (!v2) {
@@ -279,7 +316,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (2, 'submissions_runs', ?, ?)`
       ).run(SCHEMA_V2_CHECKSUM, utcNow())
     } else if (v2.checksum !== SCHEMA_V2_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=2').run(SCHEMA_V2_CHECKSUM); console.warn('[migrate] v2 checksum 已刷新')
+      throw migrationChecksumError({ version: 2, name: SQLITE_MIGRATION_NAMES[1], expected: SCHEMA_V2_CHECKSUM, actual: v2.checksum })
     }
     const v3 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=3').get()
     if (!v3) {
@@ -287,7 +324,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (3, 'harness_gate_observe', ?, ?)`
       ).run(SCHEMA_V3_CHECKSUM, utcNow())
     } else if (v3.checksum !== SCHEMA_V3_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=3').run(SCHEMA_V3_CHECKSUM); console.warn('[migrate] v3 checksum 已刷新')
+      throw migrationChecksumError({ version: 3, name: SQLITE_MIGRATION_NAMES[2], expected: SCHEMA_V3_CHECKSUM, actual: v3.checksum })
     }
     const v4 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=4').get()
     if (!v4) {
@@ -295,7 +332,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (4, 'suite_registry_leases', ?, ?)`
       ).run(SCHEMA_V4_CHECKSUM, utcNow())
     } else if (v4.checksum !== SCHEMA_V4_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=4').run(SCHEMA_V4_CHECKSUM); console.warn('[migrate] v4 checksum 已刷新')
+      throw migrationChecksumError({ version: 4, name: SQLITE_MIGRATION_NAMES[3], expected: SCHEMA_V4_CHECKSUM, actual: v4.checksum })
     }
     const v5 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=5').get()
     if (!v5) {
@@ -303,7 +340,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (5, 'secret_grants', ?, ?)`
       ).run(SCHEMA_V5_CHECKSUM, utcNow())
     } else if (v5.checksum !== SCHEMA_V5_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=5').run(SCHEMA_V5_CHECKSUM); console.warn('[migrate] v5 checksum 已刷新')
+      throw migrationChecksumError({ version: 5, name: SQLITE_MIGRATION_NAMES[4], expected: SCHEMA_V5_CHECKSUM, actual: v5.checksum })
     }
     const v6 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=6').get()
     if (!v6) {
@@ -311,7 +348,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (6, 'image_manifest_signing_key', ?, ?)`
       ).run(SCHEMA_V6_CHECKSUM, utcNow())
     } else if (v6.checksum !== SCHEMA_V6_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=6').run(SCHEMA_V6_CHECKSUM); console.warn('[migrate] v6 checksum 已刷新')
+      throw migrationChecksumError({ version: 6, name: SQLITE_MIGRATION_NAMES[5], expected: SCHEMA_V6_CHECKSUM, actual: v6.checksum })
     }
     const v7 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=7').get()
     if (!v7) {
@@ -319,7 +356,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (7, 'm4_overlays_waivers_promotion', ?, ?)`
       ).run(SCHEMA_V7_CHECKSUM, utcNow())
     } else if (v7.checksum !== SCHEMA_V7_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=7').run(SCHEMA_V7_CHECKSUM); console.warn('[migrate] v7 checksum 已刷新')
+      throw migrationChecksumError({ version: 7, name: SQLITE_MIGRATION_NAMES[6], expected: SCHEMA_V7_CHECKSUM, actual: v7.checksum })
     }
     const v8 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=8').get()
     if (!v8) {
@@ -327,7 +364,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (8, 'm5_failure_experience', ?, ?)`
       ).run(SCHEMA_V8_CHECKSUM, utcNow())
     } else if (v8.checksum !== SCHEMA_V8_CHECKSUM) {
-      /* v8 schema evolving: accept new checksum */ db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=8').run(SCHEMA_V8_CHECKSUM)
+      throw migrationChecksumError({ version: 8, name: SQLITE_MIGRATION_NAMES[7], expected: SCHEMA_V8_CHECKSUM, actual: v8.checksum })
     }
     const v9 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=9').get()
     if (!v9) {
@@ -335,7 +372,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (9, 'test_spec_assets', ?, ?)`
       ).run(SCHEMA_V9_CHECKSUM, utcNow())
     } else if (v9.checksum !== SCHEMA_V9_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=9').run(SCHEMA_V9_CHECKSUM); console.warn('[migrate] v9 checksum 已刷新')
+      throw migrationChecksumError({ version: 9, name: SQLITE_MIGRATION_NAMES[8], expected: SCHEMA_V9_CHECKSUM, actual: v9.checksum })
     }
     const v10 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=10').get()
     if (!v10) {
@@ -343,7 +380,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (10, 'test_spec_side', ?, ?)`
       ).run(SCHEMA_V10_CHECKSUM, utcNow())
     } else if (v10.checksum !== SCHEMA_V10_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=10').run(SCHEMA_V10_CHECKSUM); console.warn('[migrate] v10 checksum 已刷新')
+      throw migrationChecksumError({ version: 10, name: SQLITE_MIGRATION_NAMES[9], expected: SCHEMA_V10_CHECKSUM, actual: v10.checksum })
     }
     const v11 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=11').get()
     if (!v11) {
@@ -351,7 +388,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (11, 'snapshot_changed_files', ?, ?)`
       ).run(SCHEMA_V11_CHECKSUM, utcNow())
     } else if (v11.checksum !== SCHEMA_V11_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=11').run(SCHEMA_V11_CHECKSUM); console.warn('[migrate] v11 checksum 已刷新')
+      throw migrationChecksumError({ version: 11, name: SQLITE_MIGRATION_NAMES[10], expected: SCHEMA_V11_CHECKSUM, actual: v11.checksum })
     }
     const v12 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=12').get()
     if (!v12) {
@@ -359,7 +396,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (12, 'gate_loop_clrp', ?, ?)`
       ).run(SCHEMA_V12_CHECKSUM, utcNow())
     } else if (v12.checksum !== SCHEMA_V12_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=12').run(SCHEMA_V12_CHECKSUM)
+      throw migrationChecksumError({ version: 12, name: SQLITE_MIGRATION_NAMES[11], expected: SCHEMA_V12_CHECKSUM, actual: v12.checksum })
     }
     const v13 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=13').get()
     if (!v13) {
@@ -367,7 +404,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (13, 'repo_test_policies', ?, ?)`
       ).run(SCHEMA_V13_CHECKSUM, utcNow())
     } else if (v13.checksum !== SCHEMA_V13_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=13').run(SCHEMA_V13_CHECKSUM)
+      throw migrationChecksumError({ version: 13, name: SQLITE_MIGRATION_NAMES[12], expected: SCHEMA_V13_CHECKSUM, actual: v13.checksum })
     }
     const v14 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=14').get()
     if (!v14) {
@@ -375,7 +412,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (14, 'gate_mode_disabled', ?, ?)`
       ).run(SCHEMA_V14_CHECKSUM, utcNow())
     } else if (v14.checksum !== SCHEMA_V14_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=14').run(SCHEMA_V14_CHECKSUM)
+      throw migrationChecksumError({ version: 14, name: SQLITE_MIGRATION_NAMES[13], expected: SCHEMA_V14_CHECKSUM, actual: v14.checksum })
     }
     const v15 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=15').get()
     if (!v15) {
@@ -383,7 +420,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (15, 'gate_mode_enforce_ml', ?, ?)`
       ).run(SCHEMA_V15_CHECKSUM, utcNow())
     } else if (v15.checksum !== SCHEMA_V15_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=15').run(SCHEMA_V15_CHECKSUM)
+      throw migrationChecksumError({ version: 15, name: SQLITE_MIGRATION_NAMES[14], expected: SCHEMA_V15_CHECKSUM, actual: v15.checksum })
     }
     const v16 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=16').get()
     if (!v16) {
@@ -391,7 +428,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (16, 'repo_env_accounts', ?, ?)`
       ).run(SCHEMA_V16_CHECKSUM, utcNow())
     } else if (v16.checksum !== SCHEMA_V16_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=16').run(SCHEMA_V16_CHECKSUM)
+      throw migrationChecksumError({ version: 16, name: SQLITE_MIGRATION_NAMES[15], expected: SCHEMA_V16_CHECKSUM, actual: v16.checksum })
     }
     const v17 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=17').get()
     if (!v17) {
@@ -399,7 +436,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (17, 'repo_default_test_env', ?, ?)`
       ).run(SCHEMA_V17_CHECKSUM, utcNow())
     } else if (v17.checksum !== SCHEMA_V17_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=17').run(SCHEMA_V17_CHECKSUM)
+      throw migrationChecksumError({ version: 17, name: SQLITE_MIGRATION_NAMES[16], expected: SCHEMA_V17_CHECKSUM, actual: v17.checksum })
     }
     const v18 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=18').get()
     if (!v18) {
@@ -407,7 +444,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (18, 'ac_coverage_category', ?, ?)`
       ).run(SCHEMA_V18_CHECKSUM, utcNow())
     } else if (v18.checksum !== SCHEMA_V18_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=18').run(SCHEMA_V18_CHECKSUM)
+      throw migrationChecksumError({ version: 18, name: SQLITE_MIGRATION_NAMES[17], expected: SCHEMA_V18_CHECKSUM, actual: v18.checksum })
     }
     const v19 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=19').get()
     if (!v19) {
@@ -415,7 +452,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (19, 'test_spec_review_plugin', ?, ?)`
       ).run(SCHEMA_V19_CHECKSUM, utcNow())
     } else if (v19.checksum !== SCHEMA_V19_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=19').run(SCHEMA_V19_CHECKSUM)
+      throw migrationChecksumError({ version: 19, name: SQLITE_MIGRATION_NAMES[18], expected: SCHEMA_V19_CHECKSUM, actual: v19.checksum })
     }
     const v20 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=20').get()
     if (!v20) {
@@ -423,7 +460,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (20, 'f2p_results', ?, ?)`
       ).run(SCHEMA_V20_CHECKSUM, utcNow())
     } else if (v20.checksum !== SCHEMA_V20_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=20').run(SCHEMA_V20_CHECKSUM)
+      throw migrationChecksumError({ version: 20, name: SQLITE_MIGRATION_NAMES[19], expected: SCHEMA_V20_CHECKSUM, actual: v20.checksum })
     }
     const v21 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=21').get()
     if (!v21) {
@@ -431,7 +468,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (21, 'platform_settings', ?, ?)`
       ).run(SCHEMA_V21_CHECKSUM, utcNow())
     } else if (v21.checksum !== SCHEMA_V21_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=21').run(SCHEMA_V21_CHECKSUM)
+      throw migrationChecksumError({ version: 21, name: SQLITE_MIGRATION_NAMES[20], expected: SCHEMA_V21_CHECKSUM, actual: v21.checksum })
     }
     const v22 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=22').get()
     if (!v22) {
@@ -439,7 +476,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (22, 'attempt_steps_timeline', ?, ?)`
       ).run(SCHEMA_V22_CHECKSUM, utcNow())
     } else if (v22.checksum !== SCHEMA_V22_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=22').run(SCHEMA_V22_CHECKSUM)
+      throw migrationChecksumError({ version: 22, name: SQLITE_MIGRATION_NAMES[21], expected: SCHEMA_V22_CHECKSUM, actual: v22.checksum })
     }
     const v23 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=23').get()
     if (!v23) {
@@ -447,7 +484,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (23, 'test_runs_purpose_mutation', ?, ?)`
       ).run(SCHEMA_V23_CHECKSUM, utcNow())
     } else if (v23.checksum !== SCHEMA_V23_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=23').run(SCHEMA_V23_CHECKSUM)
+      throw migrationChecksumError({ version: 23, name: SQLITE_MIGRATION_NAMES[22], expected: SCHEMA_V23_CHECKSUM, actual: v23.checksum })
     }
     const v24 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=24').get()
     if (!v24) {
@@ -455,7 +492,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (24, 'test_specs_scope', ?, ?)`
       ).run(SCHEMA_V24_CHECKSUM, utcNow())
     } else if (v24.checksum !== SCHEMA_V24_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=24').run(SCHEMA_V24_CHECKSUM)
+      throw migrationChecksumError({ version: 24, name: SQLITE_MIGRATION_NAMES[23], expected: SCHEMA_V24_CHECKSUM, actual: v24.checksum })
     }
     const v25 = db.prepare('SELECT checksum FROM schema_migrations WHERE version=25').get()
     if (!v25) {
@@ -463,7 +500,7 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
         `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (25, 'accepted_results_multi_attempt', ?, ?)`
       ).run(SCHEMA_V25_CHECKSUM, utcNow())
     } else if (v25.checksum !== SCHEMA_V25_CHECKSUM) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=25').run(SCHEMA_V25_CHECKSUM)
+      throw migrationChecksumError({ version: 25, name: SQLITE_MIGRATION_NAMES[24], expected: SCHEMA_V25_CHECKSUM, actual: v25.checksum })
     }
     ensureSystemPrincipal(db)
     if (!skipLegacyMap) mapLegacyTasks(db)
@@ -480,6 +517,28 @@ export function runTestingMigrations(db, { skipLegacyMap = false } = {}) {
   // 注意：默认租户种子（seedDefaultTenantRepos）已移至生产启动路径（db.js initDB）——
   // 迁移只管 schema，不种业务数据；单测自行 ensureRepository 建仓，避免与手插 repositories 冲突。
   ensureHarnessCompatColumns(db)
+  validateAppliedMigrationLedger(db, 'sqlite')
+}
+
+function applySchemaV8Compatibly(db) {
+  const hasTable = (table) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)
+  const hasColumn = (table, column) => hasTable(table) && !!db.prepare(
+    `SELECT 1 FROM pragma_table_info('${table}') WHERE name=?`
+  ).get(column)
+  let sql = SCHEMA_V8_SQL
+  for (const column of ['reviewed_by', 'reviewed_at']) {
+    if (hasColumn('test_failures', column)) {
+      sql = sql.replace(new RegExp(`ALTER TABLE test_failures ADD COLUMN ${column} TEXT;`, 'g'), '')
+    }
+  }
+  if (hasTable('experiences') && !hasColumn('experiences', 'repo_id')) {
+    sql = sql.replace(
+      /CREATE INDEX IF NOT EXISTS idx_experiences_repo\s+ON experiences\(repo_id, created_at DESC\);/,
+      '-- Legacy experiences table is converged by v27; this v8 index targets the incompatible shape.\n'
+    )
+  }
+  const apply = db.transaction(() => db.exec(sql))
+  apply.immediate()
 }
 
 /**
@@ -494,9 +553,7 @@ function ensureHarnessCompatColumns(db) {
   const addIfMissing = (table, col, ddl) => {
     if (!hasTable(table)) return
     const cols = colsOf(table)
-    if (!cols.has(col)) {
-      try { db.exec(ddl) } catch { /* ignore */ }
-    }
+    if (!cols.has(col)) db.exec(ddl)
   }
   addIfMissing('tasks', 'size', `ALTER TABLE tasks ADD COLUMN size TEXT`)
   addIfMissing('tasks', 'meta', `ALTER TABLE tasks ADD COLUMN meta TEXT DEFAULT '{}'`)
@@ -519,36 +576,26 @@ export function seedDefaultTenantRepos(db) {
   try { seedRepoGateModesEnforce(db) } catch { /* ignore */ }
 }
 
-/**
- * v27+ 版本化迁移助手：apply 回调与 schema_migrations 登记位于同一 IMMEDIATE 事务。
- * - apply 必须幂等（列存在性 / IF NOT EXISTS）
- * - 任一步失败则事务回滚，版本账本不落账
- * - checksum 变更时刷新账本（对齐历史 v12/v13 等行为），不因改文件导致进程起不来
- *
- * 注意：不要用本助手重写 v1–v26——那些版本在真库已登记，重建风险高。
- * export 供单测验证原子性。
- */
-export function applyVersionedMigration(db, { version, name, checksum, apply, allowChecksumRefresh = true }) {
+/** Apply DDL and ledger insertion atomically; applied migrations are immutable. */
+export function applyVersionedMigration(db, { version, name, checksum, apply }) {
   const tx = db.transaction(() => {
-    const applied = db.prepare('SELECT checksum FROM schema_migrations WHERE version=?').get(version)
-    if (applied && applied.checksum === checksum) return
-    if (apply) apply(db)
-    if (!applied) {
-      db.prepare(
-        `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)`
-      ).run(version, name, checksum, utcNow())
-    } else if (allowChecksumRefresh) {
-      db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=?').run(checksum, version)
-    } else {
-      throw new Error(`schema_migrations v${version} checksum mismatch`)
+    const applied = db.prepare('SELECT name, checksum FROM schema_migrations WHERE version=?').get(version)
+    if (applied) {
+      if (applied.name !== name || applied.checksum !== checksum) {
+        throw migrationChecksumError({ version, name, expected: checksum, actual: applied.checksum })
+      }
+      return
     }
+    if (apply) apply(db)
+    db.prepare(
+      `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)`
+    ).run(version, name, checksum, utcNow())
   })
   tx.immediate()
 }
 
 /** v27+ 迁移清单：新增版本在此登记，勿回改 v1–v26 历史路径 */
 function runPostV26Migrations(db) {
-  // 单个版本失败不阻断整进程启动；错误打日志便于排障
   const steps = [
     ['v27', () => applyV27ExperiencesConvergence(db)],
     ['v28', () => applyV28IdSequences(db)],
@@ -564,14 +611,10 @@ function runPostV26Migrations(db) {
     ['v39', () => applyV39DeferredSubmissions(db)],
     ['v40', () => applyV40DeferredRetryColumns(db)],
     ['v41', () => applyV41GenericRunSides(db)],
+    ['v42', () => applyV42PromotionProviderFieldsRemoved(db)],
+    ['v43', () => applyV43ExperienceFeedback(db)],
   ]
-  for (const [label, fn] of steps) {
-    try {
-      fn()
-    } catch (e) {
-      console.error(`[migrate] ${label} 失败（不阻断启动）: ${e && e.message ? e.message : e}`)
-    }
-  }
+  for (const [, fn] of steps) fn()
 }
 
 function applyV41GenericRunSides(db) {
@@ -583,13 +626,37 @@ function applyV41GenericRunSides(db) {
   })
 }
 
+function applyV42PromotionProviderFieldsRemoved(db) {
+  applyVersionedMigration(db, {
+    version: 42,
+    name: 'promotion_provider_fields_removed',
+    checksum: createHash('sha256').update(SCHEMA_V42_SQL).digest('hex'),
+    apply: (db) => {
+      const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='promotion_proposals'").get()
+      if (!exists) throw new Error('[migrate v42] promotion_proposals table is missing')
+      const columns = new Set(db.prepare('PRAGMA table_info(promotion_proposals)').all().map((column) => column.name))
+      for (const column of ['mr_provider', 'mr_project_id', 'mr_iid', 'mr_url', 'mr_state']) {
+        if (columns.has(column)) db.exec(`ALTER TABLE promotion_proposals DROP COLUMN ${column}`)
+      }
+    },
+  })
+}
+
+function applyV43ExperienceFeedback(db) {
+  applyVersionedMigration(db, {
+    version: 43,
+    name: 'experience_feedback',
+    checksum: createHash('sha256').update(SCHEMA_V43_SQL).digest('hex'),
+    apply: (db) => db.exec(SCHEMA_V43_SQL),
+  })
+}
+
 /**
  * v27 experiences schema convergence
  * 在真库协作层 experiences（db.js：id/repo/content/status/...）上增补
  * testing/failures promote 所需列；按列存在性门控，幂等可重入。
  */
 function applyV27ExperiencesConvergence(db) {
-  if (!SCHEMA_V27_SQL) return // 意图文件缺失时跳过（半同步环境）
   applyVersionedMigration(db, {
     version: 27,
     name: 'experience_schema_convergence',
@@ -636,12 +703,23 @@ function applyV28IdSequences(db) {
     apply: (db) => {
       createIdSequencesTable(db)
       // 回填水位：真库 experiences / verify_reports 可能已有当日 ID
-      try {
-        backfillIdSequence(db, 'exp', 'experiences', 'id')
-      } catch { /* 表可能不存在 */ }
-      try {
+      const hasTable = (table) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)
+      const hasColumn = (table, column) => hasTable(table) && !!db.prepare(
+        `SELECT 1 FROM pragma_table_info('${table}') WHERE name=?`
+      ).get(column)
+      if (hasTable('experiences')) {
+        const idColumn = hasColumn('experiences', 'id')
+          ? 'id'
+          : hasColumn('experiences', 'experience_id')
+            ? 'experience_id'
+            : null
+        if (!idColumn) throw new Error('[migrate v28] experiences table has neither id nor experience_id column')
+        backfillIdSequence(db, 'exp', 'experiences', idColumn)
+      }
+      if (hasTable('verify_reports')) {
+        if (!hasColumn('verify_reports', 'id')) throw new Error('[migrate v28] verify_reports table has no id column')
         backfillIdSequence(db, 'rep', 'verify_reports', 'id')
-      } catch { /* 表可能不存在 */ }
+      }
     },
   })
 }
@@ -651,7 +729,6 @@ function applyV28IdSequences(db) {
  * command_exit_code / started_at / finished_at / source
  */
 function applyV29VerifyEvidenceFields(db) {
-  if (!SCHEMA_V29_SQL) return
   applyVersionedMigration(db, {
     version: 29,
     name: 'verify_evidence_fields',
@@ -909,13 +986,23 @@ function applyV36TenantExtensions(db) {
  * 只在 dialect=postgres 时调用（runTestingMigrations 顶部 PG 分支）。
  */
 export async function runPostgresPatchups(db) {
+  // v38 · mutation_verdict（PG 补齐，对齐 SQLite v37）
+  // ALTER ADD COLUMN IF NOT EXISTS 天然幂等；applyVersionedMigration 记账避免重复执行
+  await applyVersionedMigrationAsync(db, {
+    version: 38,
+    name: 'mutation_verdict_pg',
+    checksum: 'mutation-verdict-pg-v38',
+    apply: async (tx) => {
+      await tx.exec('ALTER TABLE test_specs ADD COLUMN IF NOT EXISTS mutation_verdict TEXT')
+    },
+  })
   // v39 · deferred_submissions（PG 主库补齐，冷启动自动建表；baseline.sql 已含，此处保护旧库）
   await applyVersionedMigrationAsync(db, {
     version: 39,
     name: 'deferred_submissions_pg',
     checksum: 'deferred-submissions-pg-v39',
-    apply: async () => {
-      await db.exec(`CREATE TABLE IF NOT EXISTS deferred_submissions (
+    apply: async (tx) => {
+      await tx.exec(`CREATE TABLE IF NOT EXISTS deferred_submissions (
         deferred_id              TEXT PRIMARY KEY,
         client_request_id        TEXT NOT NULL,
         repo_id                  TEXT NOT NULL,
@@ -939,17 +1026,7 @@ export async function runPostgresPatchups(db) {
         updated_at               TEXT NOT NULL,
         UNIQUE(repo_id, client_request_id)
       )`)
-      await db.exec(`CREATE INDEX IF NOT EXISTS idx_deferred_status ON deferred_submissions(status, created_at)`)
-    },
-  })
-  // v38 · mutation_verdict（PG 补齐，对齐 SQLite v37）
-  // ALTER ADD COLUMN IF NOT EXISTS 天然幂等；applyVersionedMigration 记账避免重复执行
-  await applyVersionedMigrationAsync(db, {
-    version: 38,
-    name: 'mutation_verdict_pg',
-    checksum: 'mutation-verdict-pg-v38',
-    apply: async () => {
-      await db.exec('ALTER TABLE test_specs ADD COLUMN IF NOT EXISTS mutation_verdict TEXT')
+      await tx.exec(`CREATE INDEX IF NOT EXISTS idx_deferred_status ON deferred_submissions(status, created_at)`)
     },
   })
   // v40 · deferred_submissions 重试列（P1-A 失败分类/退避重试；PG 旧库补齐，新库 baseline 已含）
@@ -957,19 +1034,63 @@ export async function runPostgresPatchups(db) {
     version: 40,
     name: 'deferred_retry_cols_pg',
     checksum: 'deferred-retry-cols-pg-v40',
-    apply: async () => {
-      await db.exec('ALTER TABLE deferred_submissions ADD COLUMN IF NOT EXISTS attempts BIGINT NOT NULL DEFAULT 0')
-      await db.exec('ALTER TABLE deferred_submissions ADD COLUMN IF NOT EXISTS max_attempts BIGINT NOT NULL DEFAULT 3')
-      await db.exec('ALTER TABLE deferred_submissions ADD COLUMN IF NOT EXISTS next_retry_at TEXT')
-      await db.exec('ALTER TABLE deferred_submissions ADD COLUMN IF NOT EXISTS last_error_class TEXT')
+    apply: async (tx) => {
+      await tx.exec('ALTER TABLE deferred_submissions ADD COLUMN IF NOT EXISTS attempts BIGINT NOT NULL DEFAULT 0')
+      await tx.exec('ALTER TABLE deferred_submissions ADD COLUMN IF NOT EXISTS max_attempts BIGINT NOT NULL DEFAULT 3')
+      await tx.exec('ALTER TABLE deferred_submissions ADD COLUMN IF NOT EXISTS next_retry_at TEXT')
+      await tx.exec('ALTER TABLE deferred_submissions ADD COLUMN IF NOT EXISTS last_error_class TEXT')
     },
   })
   await applyVersionedMigrationAsync(db, {
     version: 41,
     name: 'generic_run_sides_pg',
     checksum: 'generic-run-sides-pg-v41',
-    apply: async () => {
-      await db.exec('ALTER TABLE test_runs DROP CONSTRAINT IF EXISTS test_runs_side_check')
+    apply: async (tx) => {
+      await tx.exec('ALTER TABLE test_runs DROP CONSTRAINT IF EXISTS test_runs_side_check')
+    },
+  })
+  await applyVersionedMigrationAsync(db, {
+    version: 42,
+    name: 'promotion_provider_fields_removed_pg',
+    checksum: 'promotion-provider-fields-removed-pg-v42',
+    apply: async (tx) => {
+      for (const column of ['mr_provider', 'mr_project_id', 'mr_iid', 'mr_url', 'mr_state']) {
+        await tx.exec(`ALTER TABLE promotion_proposals DROP COLUMN IF EXISTS ${column}`)
+      }
+    },
+  })
+  await applyVersionedMigrationAsync(db, {
+    version: 43,
+    name: 'experience_feedback_pg',
+    checksum: 'experience-feedback-pg-v43',
+    apply: async (tx) => {
+      await tx.exec(`CREATE TABLE IF NOT EXISTS experience_feedback (
+        feedback_id TEXT PRIMARY KEY,
+        repo_id TEXT NOT NULL REFERENCES repositories(repo_id),
+        run_id TEXT,
+        failure_id TEXT,
+        experience_ref TEXT,
+        author TEXT,
+        source_type TEXT NOT NULL CHECK(source_type IN ('run','manual','external')),
+        failure_summary TEXT NOT NULL,
+        resolution_summary TEXT NOT NULL,
+        scope_json TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
+        verification_status TEXT NOT NULL DEFAULT 'unverified'
+          CHECK(verification_status IN ('unverified','confirmed','rejected')),
+        created_at TEXT NOT NULL,
+        reviewed_at TEXT,
+        reviewed_by TEXT,
+        review_note TEXT,
+        CHECK(length(trim(failure_summary)) > 0),
+        CHECK(length(trim(resolution_summary)) > 0)
+      )`)
+      await tx.exec(`CREATE INDEX IF NOT EXISTS idx_experience_feedback_repo_status
+        ON experience_feedback(repo_id, verification_status, created_at DESC)`)
+      await tx.exec(`CREATE INDEX IF NOT EXISTS idx_experience_feedback_run
+        ON experience_feedback(run_id, created_at DESC)`)
+      await tx.exec(`CREATE INDEX IF NOT EXISTS idx_experience_feedback_failure
+        ON experience_feedback(failure_id, created_at DESC)`)
     },
   })
 }
@@ -977,12 +1098,19 @@ export async function runPostgresPatchups(db) {
 // 异步版 applyVersionedMigration：pg 句柄 prepare().run() 返回 Promise，同步 API 兜不住。
 // 语义与 applyVersionedMigration 一致：checksum 相同则跳过；否则跑 apply 并登记。
 async function applyVersionedMigrationAsync(db, { version, name, checksum, apply }) {
-  const applied = await db.prepare('SELECT checksum FROM schema_migrations WHERE version=?').get(version)
-  if (applied && applied.checksum === checksum) return
-  await apply(db)
-  await db.prepare(
-    'INSERT INTO schema_migrations(version,name,checksum,applied_at) VALUES (?,?,?,?) ON CONFLICT(version) DO UPDATE SET name=excluded.name, checksum=excluded.checksum, applied_at=excluded.applied_at'
-  ).run(String(version), name, checksum, new Date().toISOString())
+  await db.tx(async (tx) => {
+    const applied = await tx.prepare('SELECT name, checksum FROM schema_migrations WHERE version=?').get(version)
+    if (applied) {
+      if (applied.name !== name || applied.checksum !== checksum) {
+        throw migrationChecksumError({ version, name, expected: checksum, actual: applied.checksum })
+      }
+      return
+    }
+    await apply(tx)
+    await tx.prepare(
+      'INSERT INTO schema_migrations(version,name,checksum,applied_at) VALUES (?,?,?,?)'
+    ).run(String(version), name, checksum, new Date().toISOString())
+  })
 }
 
 function applyV39DeferredSubmissions(db) {

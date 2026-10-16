@@ -15,6 +15,7 @@ const state = {
   tasks: { status: 'open', items: [], wfCache: new Map() },
   docs: { keyword: '', selected: null, content: null, versions: null, showVersions: false },
   specs: { q: '', type: '', status: '', side: '', sort: 'updated', module: '', catalog: null, drawer: null },
+  trends: { days: 30 },
 }
 
 const $ = (sel, root) => (root || document).querySelector(sel)
@@ -584,6 +585,38 @@ function updateLiveBadge() {
 }
 
 /* ═══ 路由 ═══ */
+async function renderTestingTrends() {
+  const view = $('#view')
+  view.innerHTML = `<div class="view-wrap"><div class="toolbar"><label>时间范围<select id="trendDays"><option value="7">最近 7 天</option><option value="30">最近 30 天</option><option value="90">最近 90 天</option><option value="180">最近 180 天</option></select></label><button class="btn ghost" id="trendRefresh">刷新趋势</button></div><div id="trendContent"><div class="empty">加载运行证据趋势…</div></div></div>`
+  const select = $('#trendDays')
+  select.value = String(state.trends.days)
+  const load = async () => {
+    const content = $('#trendContent')
+    if (state.repo === 'all') { content.innerHTML = '<div class="empty">请选择单个项目查看趋势；跨项目数据不会混用统计口径。</div>'; return }
+    content.innerHTML = '<div class="empty">加载运行证据趋势…</div>'
+    try {
+      const result = await api(`/api/testing/trends?${new URLSearchParams({ repo: state.repo, days: state.trends.days })}`)
+      const overall = result.overall
+      const percent = (value) => value == null ? '未知' : `${Math.round(value * 100)}%`
+      const bars = result.series.map((item) => {
+        const height = item.gatePassRate == null ? 0 : Math.max(3, Math.round(item.gatePassRate * 100))
+        return `<div class="trend-bar-item" title="${esc(item.start)} · ${esc(percent(item.gatePassRate))} · 分母 ${item.gateDenominator}"><div class="trend-bar-track"><div class="trend-bar-fill" style="height:${height}%"></div></div><span>${esc(item.start.slice(5))}</span></div>`
+      }).join('')
+      const rows = result.series.map((item) => `<tr><td>${esc(item.start)}</td><td>${item.completedRuns}</td><td>${item.gatePassed}/${item.gateDenominator} · ${esc(percent(item.gatePassRate))}</td><td>${item.checksPassed}/${item.checkDenominator} · ${esc(percent(item.checkPassRate))}</td><td>${item.checksSkipped}</td><td>${item.incompleteGateRuns}</td><td>${item.averageDurationMs == null ? '未知' : `${item.averageDurationMs} ms`}</td></tr>`).join('')
+      content.innerHTML = `<div class="stat-grid trend-stat-grid">
+        ${statCard('✓', 'green', percent(overall.gatePassRate), '完整覆盖门禁通过率', [`<span class="chip">分母 ${overall.gateDenominator}</span>`])}
+        ${statCard('◉', 'blue', percent(overall.checkPassRate), '检查项通过率', [`<span class="chip">分母 ${overall.checkDenominator}</span>`])}
+        ${statCard('↗', 'violet', overall.completedRuns, '已结束运行', [`<span class="chip">无检查证据 ${overall.noCheckEvidenceRuns}</span>`])}
+        ${statCard('◷', 'amber', overall.averageDurationMs == null ? '未知' : `${overall.averageDurationMs} ms`, '平均门禁耗时', [`<span class="chip">不完整覆盖 ${overall.incompleteGateRuns}</span>`])}
+      </div><section class="card trend-card"><div class="card-head"><h3>完整覆盖门禁通过率</h3><span class="chip">${esc(result.repo)}</span></div><p class="muted">没有有效分母时显示“未知”。${overall.checksSkipped} 个 skipped 检查项不进入通过率分母。</p><div class="trend-bars" role="img" aria-label="按日期展示完整覆盖门禁通过率">${bars}</div></section>
+      <section class="card trend-card"><div class="card-head"><h3>统计明细</h3><span class="muted">UTC 日期 · 每日桶</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>日期</th><th>结束运行</th><th>门禁通过</th><th>检查项通过</th><th>跳过检查</th><th>覆盖不完整</th><th>平均耗时</th></tr></thead><tbody>${rows || '<tr><td colspan="7">所选时间范围没有运行记录</td></tr>'}</tbody></table></div>
+      <p class="muted">门禁通过率只统计 coverage_complete=1 且至少有一个 passed/failed/error 检查证据的 gate 运行。检查项通过率为 passed / (passed + failed + error)，排除 skipped 和未知状态。空分母为未知，不等于 100%。</p></section>`
+    } catch (error) { content.innerHTML = `<div class="empty">趋势加载失败：${esc(error.message)}</div>` }
+  }
+  select.onchange = () => { state.trends.days = Number(select.value); void load() }
+  $('#trendRefresh').onclick = () => { void load() }
+  await load()
+}
 const ROUTES = {
   overview:     { title: '总览',   sub: '体系运转一屏总览', render: renderOverview },
   experiences:  { title: '经验库', sub: '团队踩坑与规则的共享记忆 · 支持检索与评审', render: renderExperiences },
@@ -591,6 +624,7 @@ const ROUTES = {
   tasks:        { title: '任务',   sub: 'Harness 工作流任务 · 云端门禁测试内嵌于任务详情', render: renderTasks },
   projects:     { title: '项目管理', sub: '接入项目 · 云端测试开关与档位 · dev/qa 登录账号', render: renderProjects },
   specs:        { title: '测试资产', sub: '云端测试脚本资产库 · 按模块组织 · 版本与执行可追溯', render: renderSpecs },
+  trends:       { title: '测试趋势', sub: '按实际运行证据统计通过率、覆盖和耗时', render: renderTestingTrends },
   docs:         { title: '知识库', sub: '规范文档单一真源 · 版本可回滚', render: renderDocs },
 }
 function currentRoute() {

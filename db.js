@@ -215,21 +215,17 @@ export function initDB() {
   // 首次启动注入默认清单（可用 update_doc(name='RULES_MANIFEST', ...) 覆盖）
   const manifestExists = db.prepare("SELECT COUNT(*) as c FROM docs WHERE repo = 'shared' AND name = 'RULES_MANIFEST'").get()
   if (!manifestExists.c) {
-    const defaultManifest = [
-      '1. 卡片圆角以设计稿为准，不强制统一值（原统一圆角约束已取消）',
-      '2. 品牌红 #fc3f41（小写）',
-      '3. 顶部导航栏不要实现（AppNav 全局处理）',
-      '4. 空状态用 <Empty> 组件 + !loading 守卫',
-      '5. 滚动容器高度 calc(100vh - @navTitleHeight - 36px)',
-      '6. 开发写 px（postcss-pxtorem 自动转 rem，rootValue 37.5）',
-      '7. 新代码用 <script setup> + defineComponent({ name })',
-      '8. 遇到 bug 先调用 MCP distill_query(关键词) 查团队经验库',
-      '9. Harness：新任务 harness_start → 阶段推进 harness_advance（禁止 task_state 改 phase）',
-      '10. AC 纪律：M/L 任务进入 EXECUTE 前必须交 AC 验收清单（L: PLAN→EXECUTE；M: CLASSIFY→EXECUTE），写码后冻结不可改',
-      '11. 考试失败先看修复包分类：考卷问题改 spec（不计迭代）；业务问题修代码（必须 distill dev 经验）',
-      '12. distill 按类型带 category：开发踩坑=dev（人工审核）；测试考卷=test（免审直生效）',
-      '13. 云端测试按「脏工作区快照」送测：改完直接 awp_test_run，无需 git commit/push，禁止要求用户提交代码（改动存盘即被快照）',
-    ].join('\n')
+    const defaultRules = [
+      'Follow the repository’s documented conventions and existing architecture. Ask before introducing a new framework or runtime dependency.',
+      'Keep changes focused, readable, and compatible with the supported runtime versions.',
+      'Add or update meaningful tests for behavior changes; report skipped checks and their reasons accurately.',
+      'Do not claim a check passed unless it ran successfully. Treat missing evidence and skipped work as unknown.',
+      'Keep credentials, personal data, private URLs, and generated runtime data out of source code and commits.',
+      'Make database schema changes through a new migration; do not rewrite migrations that may already be deployed.',
+      'Prefer explicit configuration and argument arrays over shell command construction or hidden defaults.',
+      'Do not upload source, logs, or artifacts to an external service unless the user configured and requested it.',
+    ]
+    const defaultManifest = defaultRules.map((rule, index) => `${index + 1}. ${rule}`).join('\n')
     db.prepare(
       `INSERT INTO docs (repo, name, category, content, updated_at, updated_by)
        VALUES ('shared', 'RULES_MANIFEST', 'rules', ?, ?, 'system')`
@@ -237,7 +233,7 @@ export function initDB() {
     db.prepare(
       `INSERT INTO rules_manifest (content, rule_count, author, created_at)
        VALUES (?, ?, 'system', ?)`
-    ).run(defaultManifest, 9, new Date().toISOString())
+    ).run(defaultManifest, defaultRules.length, new Date().toISOString())
   }
 
   // WAL 下多进程（PM2 服务 + vitest 并行 worker）可能同时跑迁移：BEGIN IMMEDIATE

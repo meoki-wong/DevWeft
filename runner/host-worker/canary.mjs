@@ -112,7 +112,6 @@ export async function ensureCanaryStaticRun(db, {
         targetRemoteId: boot.remoteId,
         targetRef: 'refs/heads/stage',
         targetCommitOid: snap.headCommitOid,
-        mr: null,
       }
       bundle = { sha256: snap.bundleSha256, size: snap.bundleSize }
     } finally {
@@ -132,7 +131,6 @@ export async function ensureCanaryStaticRun(db, {
       targetRemoteId: boot.remoteId,
       targetRef: 'refs/heads/stage',
       targetCommitOid: OID,
-      mr: null,
     }
     bundle = { sha256: sha, size: payload.length }
   }

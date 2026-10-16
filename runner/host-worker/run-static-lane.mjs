@@ -14,10 +14,10 @@ import { createBlobStore } from '../../testing/blobs.js'
 import { activeSpecsForRepo, specsForGateInject, loadLockedSpecs, recordSpecResult, filterSpecsForSpecInject, getE2eInjectMode } from '../../testing/test-specs.js'
 import { refreshPlaceholderImage } from '../image/manifest.mjs'
 import { getActiveImage } from '../image/lifecycle.mjs'
-import { verifyVhdxSha256 } from '../image/manifest.mjs'
+import { isImageManifestEnvelope } from '../image/manifest.mjs'
 import { stageGuestPack } from '../guest-agent/stage-pack.mjs'
 import { loadGuestSidecar } from './sidecar-verify.mjs'
-import { uploadAttemptArtifact } from './index.mjs'
+import { uploadAttemptArtifact, verifyImageOrThrow } from './index.mjs'
 import { loadOrCreateWorkerIdentity } from './identity.mjs'
 import { ensureCanaryStaticRun } from './canary.mjs'
 import { resolveRepoWorkspacePath, getSmokeScriptsForSide, listSmokeSides, getRepoPlatformProfile } from '../../testing/repo-platform.js'
@@ -26,7 +26,7 @@ import { createBrokerTransports } from './broker-client.mjs'
 import { markGrantsFetched, markGrantsRevoked } from '../../testing/secrets.js'
 import {
   guestProxyConfig, SWITCH_NAME, PROXY_IP, PROXY_PORT, PROXY_HOST,
-  acquireGuestIp, releaseGuestIp,
+  FABRIC_CIDR, CONTROL_PLANE_PORTS, acquireGuestIp, releaseGuestIp,
 } from '../network/policy.mjs'
 import { documentSha256 } from '../../contracts/version.mjs'
 
@@ -80,9 +80,9 @@ function spawnPs(file, args, { input = null } = {}) {
 }
 
 export async function runStaticLane({
-  runnerRoot = 'C:\\awp-runner',
-  goldenVhdx = join('C:\\awp-runner', 'images', 'golden.vhdx'),
-  passwordFile = join('C:\\awp-runner', 'images', 'golden.admin.password'),
+  runnerRoot = process.env.AWP_RUNNER_ROOT || join(repoRoot, 'data', 'runner'),
+  goldenVhdx = join(runnerRoot, 'images', 'golden.vhdx'),
+  passwordFile = join(runnerRoot, 'images', 'golden.admin.password'),
   // smoke 全流程 = 开机~2min + npm ci ~15min + vite build ~10min + serve/playwright ~5min，
   // 20min 上限会让 smoke 结构性撞 GUEST_AGENT_TIMEOUT（9/7 第四轮实测），提到 45min
   waitMinutes = 45,
@@ -105,12 +105,26 @@ export async function runStaticLane({
   }
   process.stdout.write(`Repository snapshot source (read-only): ${workspacePath}\n`)
 
+  process.stdout.write('校验 Golden SHA-256（可能需要几十秒）\n')
+  // §9.2/§23 M3.1：使用 active 镜像行（生命周期管理），golden 文件必须与其 VHDX 摘要一致
+  const image = await getActiveImage(db)
+  if (!isImageManifestEnvelope(image.manifest_json)) {
+    throw new Error(`RUNNER_IMAGE_UNSIGNED: active image ${image.image_id} must be published with a signed manifest and SBOM.`)
+  }
+  try {
+    await verifyImageOrThrow(db, image, goldenVhdx)
+  } catch {
+    throw new Error(`IMAGE_CHANGED: golden image does not match the signed active image ${image.image_id}; restore the matching VHDX or publish a new immutable image ID.`)
+  }
+  process.stdout.write(`image ${image.image_id} vhdxSha256=${image.vhdx_sha256.slice(0, 12)}…\n`)
+
   process.stdout.write('配置隔离 Internal 交换机与宿主防火墙\n')
   await spawnPs(join(repoRoot, 'scripts', 'windows', 'ensure-isolated-network.ps1'), [
     '-SwitchName', SWITCH_NAME,
     '-ProxyIp', PROXY_IP,
     '-ProxyPort', String(PROXY_PORT),
-    '-GuestCidr', '192.168.250.0/24',
+    '-GuestCidr', FABRIC_CIDR,
+    '-BlockPorts', ...CONTROL_PLANE_PORTS.map(String),
   ])
   process.stdout.write('启动受控 npm 代理 packages.example.invalid:443\n')
   const proxy = await ensureNpmProxyListening({
@@ -118,14 +132,6 @@ export async function runStaticLane({
     caDir: join(repoRoot, 'secret-broker', 'dev-certs'),
   })
   process.stdout.write(`npm proxy reused=${proxy.reused} ${proxy.listen}\n`)
-
-  process.stdout.write('校验 Golden SHA-256（可能需要几十秒）\n')
-  // §9.2/§23 M3.1：使用 active 镜像行（生命周期管理），golden 文件必须与其 VHDX 摘要一致
-  const image = await getActiveImage(db)
-  if (!verifyVhdxSha256(goldenVhdx, image.vhdx_sha256)) {
-    throw new Error(`IMAGE_CHANGED golden.vhdx 与 active 镜像 ${image.image_id} 的摘要不一致（镜像升级后请确认 C:\\awp-runner\\images\\golden.vhdx 已更新）`)
-  }
-  process.stdout.write(`image ${image.image_id} vhdxSha256=${image.vhdx_sha256.slice(0, 12)}…\n`)
 
   const blobRoot = join(repoRoot, 'data', 'blobs')
   // 饥饿保护：仅当没有其他排队 run 时才创建/消费 canary，避免 canary 无限插队真实任务
@@ -580,6 +586,7 @@ export async function runStaticLane({
       '-GoldenVhdx', goldenVhdx,
       '-PasswordFile', passwordFile,
       '-AttemptDir', attemptDir,
+      '-RunnerRoot', runnerRoot,
       '-ExpectedVhdxSha256', image.vhdx_sha256,
       '-WaitMinutes', String(waitMinutes),
       '-BootReadyMinutes', String(bootReadyMinutes),

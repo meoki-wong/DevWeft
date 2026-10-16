@@ -54,6 +54,12 @@ describe('v27 experiences convergence', () => {
     const ver = await db.prepare('SELECT version, name FROM schema_migrations WHERE version=27').get()
     expect(ver).toBeTruthy()
     expect(ver.name).toBe('experience_schema_convergence')
+    for (const table of ['test_failures', 'failure_occurrences', 'experience_pending']) {
+      expect(await db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)).toBeTruthy()
+    }
+    const failureCols = (await db.prepare('PRAGMA table_info(test_failures)').all()).map((c) => c.name)
+    expect(failureCols).toContain('reviewed_by')
+    expect(failureCols).toContain('reviewed_at')
     const cols = (await db.prepare('PRAGMA table_info(experiences)').all()).map((c) => c.name)
     for (const c of ['title', 'source_type', 'source_id', 'reviewer', 'confidence', 'fingerprint', 'promotion_type']) {
       expect(cols).toContain(c)
@@ -142,6 +148,38 @@ describe('applyVersionedMigration atomicity (v27+ runner)', () => {
     expect(calls).toBe(1)
     const row = await db.prepare('SELECT checksum FROM schema_migrations WHERE version=98').get()
     expect(row.checksum).toBe('h1')
+    db.close()
+  })
+
+  it('checksum drift fails before apply and leaves the original ledger untouched', async () => {
+    const db = new Database(':memory:')
+    await db.exec(`CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, name TEXT, checksum TEXT, applied_at TEXT)`)
+    await db.prepare(
+      `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (97, 'old_name', 'old_sum', 't')`
+    ).run()
+    let calls = 0
+    expect(() => applyVersionedMigration(db, {
+      version: 97,
+      name: 'new_name',
+      checksum: 'new_sum',
+      apply: () => { calls += 1 },
+    })).toThrow(/checksum mismatch/)
+    expect(calls).toBe(0)
+    expect(await db.prepare('SELECT name, checksum FROM schema_migrations WHERE version=97').get())
+      .toEqual({ name: 'old_name', checksum: 'old_sum' })
+    db.close()
+  })
+
+  it('preflight rejects a changed historical checksum before executing schema DDL', async () => {
+    const db = new Database(':memory:')
+    await db.exec(`CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, name TEXT, checksum TEXT, applied_at TEXT)`)
+    await db.prepare(
+      `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (1, 'identity_snapshot_binding', 'tampered', 't')`
+    ).run()
+    expect(() => runTestingMigrations(db, { skipLegacyMap: true })).toThrow(/v1.*checksum mismatch/)
+    expect(await db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='repositories'").get())
+      .toBeUndefined()
+    expect(await db.prepare('SELECT checksum FROM schema_migrations WHERE version=1').get()).toEqual({ checksum: 'tampered' })
     db.close()
   })
 })

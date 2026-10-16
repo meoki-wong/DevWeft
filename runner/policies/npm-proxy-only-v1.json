@@ -3,6 +3,7 @@
   "switch": "awp-isolated",
   "switchType": "Internal",
   "fabricCidr": "192.168.250.0/24",
+  "addressing": "Runtime derives the proxy (.1), default guest (.10), and guest pool (.11-.26) from AWP_VM_NETWORK_CIDR, an RFC1918 /24.",
   "proxyIp": "192.168.250.1",
   "proxyPort": 443,
   "proxyHost": "packages.example.invalid",

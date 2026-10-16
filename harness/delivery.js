@@ -3,8 +3,8 @@
  *
  * 流程事实（务必与代码一致）：代码由 aicoding 侧写在开发机上，平台侧不写码、不留码
  * （送测 diff 在 submit-run.js finally 中 ensurePristineWorkspace 复位）。
- * 因此交付包是"随 DONE 返回的收尾文本"：变更说明（MR 描述素材）+ 建议 commit message
- * + 收尾清单，交付动作（commit/push/建 MR）永远发生在开发机。
+ * 因此交付包是"随 DONE 返回的收尾文本"：通用变更说明 + 建议 commit message
+ * + 收尾清单，代码托管动作永远发生在开发机。
  * 数据源全部为库内现成事实：changed files / AC 覆盖 / 轮数 / 考卷变更 / artifact 下载。
  */
 import { changedFilesForBinding } from '../testing/impact.js'
@@ -72,7 +72,7 @@ export async function buildDeliveryPack(db, { repo, taskId }) {
   lines.push(`── ① 建议 commit message ──`)
   lines.push(commitMsg)
   lines.push(``)
-  lines.push(`── ② MR 描述（直接贴进 GitLab）──`)
+  lines.push(`── ② 变更说明 ──`)
   lines.push(`【变更内容】`)
   lines.push(`${title}（任务 ${taskId}，云端门禁通过）`)
   lines.push(`【改动文件】${files.length ? `（${files.length} 个）` : ''}`)
@@ -85,8 +85,8 @@ export async function buildDeliveryPack(db, { repo, taskId }) {
   lines.push(`── ③ 收尾清单（在你自己的机器上做）──`)
   lines.push(`□ 1. 确认本地工作区为最终版（一切以你本地未提交改动为准）`)
   lines.push(`□ 2. git add -A && git commit（用上面的 message；开发期"禁止 commit/push"约束至此解除）`)
-  lines.push(`□ 3. git push 并创建 MR，把 ② 贴进描述`)
-  lines.push(`□ 4. MR 评审合并后，需求单转交付`)
+  lines.push(`□ 3. 将分支推送到项目配置的 Git 远端，并按团队流程完成代码评审`)
+  lines.push(`□ 4. 按项目交付流程更新需求状态`)
   if (lastRunId) {
     lines.push(``)
     lines.push(`── ④ 备份 ──`)

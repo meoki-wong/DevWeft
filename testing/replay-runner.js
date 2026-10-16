@@ -10,7 +10,7 @@ import { enqueueReplayRun, markReplayRun as setStatus } from './promotion.js'
 /**
  * 抽象 runner：proposal + snapshot + 已绑定测试资源 → 跑出结果对象
  * 实现: { runStarted, runFinished, status, checksPassed }
- * 真实实现接入 GitLab API + 离线沙箱；测试用 mock。
+ * Provider and execution adapters can be supplied by deployments; tests use a deterministic mock.
  */
 export class AbstractReplayRunner {
   async run(_proposal, _snapshotId, _opts) {

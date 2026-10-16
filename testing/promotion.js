@@ -20,7 +20,7 @@ const VALID_TRANSITIONS = {
 
 export async function createProposal(db, body, { authorPrincipalId, now = new Date() } = {}) {
   for (const k of Object.keys(body)) {
-    if (!['proposalId', 'repoId', 'targetSuiteRevisionId', 'baseSuiteRevisionId', 'structuredDiff', 'mrProvider', 'mrProjectId', 'mrIid', 'mrUrl'].includes(k)) {
+    if (!['proposalId', 'repoId', 'targetSuiteRevisionId', 'baseSuiteRevisionId', 'structuredDiff'].includes(k)) {
       throw new ApiError('UNKNOWN_FIELD')
     }
   }
@@ -39,20 +39,17 @@ export async function createProposal(db, body, { authorPrincipalId, now = new Da
   await db.prepare(
     `INSERT INTO promotion_proposals(
        proposal_id, repo_id, target_suite_revision_id, base_suite_revision_id,
-       author_principal_id, state, structured_diff_json,
-       mr_provider, mr_project_id, mr_iid, mr_url,
-       proposed_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?)`
+       author_principal_id, state, structured_diff_json, proposed_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?)`
   ).run(
     body.proposalId, body.repoId, body.targetSuiteRevisionId, body.baseSuiteRevisionId,
     authorPrincipalId, body.structuredDiff || null,
-    body.mrProvider || null, body.mrProjectId || null, body.mrIid || null, body.mrUrl || null,
     nowIso, nowIso
   )
   return { proposalId: body.proposalId, state: 'proposed', createdAt: nowIso }
 }
 
-export async function transitionProposal(db, { proposalId, toState, replaySummary, mrState, publishedRevisionId, now = new Date() } = {}) {
+export async function transitionProposal(db, { proposalId, toState, replaySummary, publishedRevisionId, now = new Date() } = {}) {
   if (!proposalId || !toState) throw new ApiError('INVALID_SCHEMA')
   const row = await db.prepare('SELECT * FROM promotion_proposals WHERE proposal_id=?').get(proposalId)
   if (!row) throw new ApiError('INVALID_SCHEMA')
@@ -69,10 +66,6 @@ export async function transitionProposal(db, { proposalId, toState, replaySummar
     await db.prepare(
       `UPDATE promotion_proposals SET state=?, replay_summary_json=?, updated_at=? WHERE proposal_id=?`
     ).run(toState, replaySummary, nowIso, proposalId)
-  } else if (toState === 'merging') {
-    await db.prepare(
-      `UPDATE promotion_proposals SET state=?, mr_state=?, updated_at=? WHERE proposal_id=?`
-    ).run(toState, mrState || 'opened', nowIso, proposalId)
   } else {
     await db.prepare(
       `UPDATE promotion_proposals SET state=?, updated_at=? WHERE proposal_id=?`

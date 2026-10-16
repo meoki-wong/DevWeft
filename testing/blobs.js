@@ -13,9 +13,35 @@ export function createRemoteBlobStore(baseUrl, token, { fetchImpl = globalThis.f
   const normalizedBase = String(baseUrl || '').replace(/\/+$/, '')
   if (!normalizedBase) throw new Error('createRemoteBlobStore: baseUrl required')
 
+  async function request(url, init) {
+    let res
+    try {
+      res = await fetchImpl(url, init)
+    } catch {
+      throw new ApiError('BLOB_STORE_UNAVAILABLE')
+    }
+    if (!res.ok) {
+      let body = null
+      try { body = await res.json() } catch { /* response may not be JSON */ }
+      const remoteError = body?.error
+      if (remoteError?.code === 'SNAPSHOT_HASH_MISMATCH') {
+        throw new ApiError('SNAPSHOT_HASH_MISMATCH', { detail: remoteError.detail })
+      }
+      if (res.status >= 500 || res.status === 408 || res.status === 429) {
+        throw new ApiError('BLOB_STORE_UNAVAILABLE')
+      }
+      throw new Error(`remote blob request rejected (HTTP ${res.status})`)
+    }
+    try {
+      return await res.json()
+    } catch {
+      throw new ApiError('BLOB_STORE_UNAVAILABLE')
+    }
+  }
+
   async function prepare(body) {
     rejectUnknownFields(body, ['kind', 'sha256', 'size'])
-    const res = await fetchImpl(`${normalizedBase}/v1/blobs:prepare`, {
+    const json = await request(`${normalizedBase}/v1/blobs:prepare`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -24,11 +50,6 @@ export function createRemoteBlobStore(baseUrl, token, { fetchImpl = globalThis.f
       },
       body: JSON.stringify(body),
     })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      throw new Error(`remote blob prepare failed: ${res.status} ${text}`)
-    }
-    const json = await res.json()
     return json.data || json
   }
 
@@ -36,7 +57,7 @@ export function createRemoteBlobStore(baseUrl, token, { fetchImpl = globalThis.f
     // Node.js fetch 需要 Uint8Array/ArrayBuffer，Buffer 是 Uint8Array 的子类但某些实现可能处理不当
     // 显式转换并设置 Content-Length 确保主机正确接收完整数据
     const bodyBytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
-    const res = await fetchImpl(`${normalizedBase}/v1/blobs/uploads/${uploadId}`, {
+    const json = await request(`${normalizedBase}/v1/blobs/uploads/${uploadId}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/octet-stream',
@@ -46,11 +67,6 @@ export function createRemoteBlobStore(baseUrl, token, { fetchImpl = globalThis.f
       body: bodyBytes,
       duplex: 'half', // Node.js fetch 上传 body 时需要
     })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      throw new Error(`remote blob upload failed: ${res.status} ${text}`)
-    }
-    const json = await res.json()
     return json.data || json
   }
 

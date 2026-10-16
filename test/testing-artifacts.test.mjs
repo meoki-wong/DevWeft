@@ -75,7 +75,6 @@ async function submitS(db, boot, { taskId = 'T-A-1' } = {}) {
       targetRemoteId: boot.remoteId,
       targetRef: 'refs/heads/stage',
       targetCommitOid: OID,
-      mr: null,
     },
     bundle: { sha256: sha, size: payload.length },
     suiteRequest: { mode: 'auto', candidateRevisionIds: [], candidateApprovalIds: [] },
@@ -263,7 +262,7 @@ describe('M3.4 guest + control-plane artifact flow', () => {
     mkdirSync(join(runDir, 'suite', 'fixtures'), { recursive: true })
     writeFileSync(join(runDir, 'workspace', 'ok.js'), 'const n = 1\n')
     copyFileSync(
-      join(process.cwd(), 'suites', 'demo-app', 'repo', 'fixtures', 'i18n.json'),
+      join(process.cwd(), 'suites', 'example-app', 'repo', 'fixtures', 'i18n.json'),
       join(runDir, 'suite', 'fixtures', 'i18n.json')
     )
     const plan = await db.prepare('SELECT canonical_lock_json FROM suite_plans WHERE suite_plan_id=?').get(created.suitePlanId)

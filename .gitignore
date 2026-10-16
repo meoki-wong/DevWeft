@@ -1,4 +1,5 @@
 node_modules/
+examples/example-app/dist/
 data/*.db
 data/*.db-wal
 data/*.db-shm
@@ -9,6 +10,7 @@ nohup.out
 
 # Local service configuration and credentials
 data/*.local.json
+data/repo-platform.json
 
 .poc/
 secret-broker/dev-certs/
@@ -22,6 +24,7 @@ data/deploy-status.json
 data/logs/
 data/.npm-ci.sha256
 data/deploy.env
+# Deprecated local path; deployment scripts migrate it to data/deploy.env.
 scripts/deploy.env
 scripts/golden.env
 runner/npm-proxy/node_modules/

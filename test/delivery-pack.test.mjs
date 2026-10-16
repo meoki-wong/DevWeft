@@ -30,7 +30,7 @@ beforeAll(async () => {
 })
 
 describe('buildDeliveryPack', () => {
-  it('包含 commit message / MR 描述素材 / 收尾清单 / diff 备份链接', async () => {
+  it('包含 commit message / 通用变更说明 / 收尾清单 / diff 备份链接', async () => {
     const pack = await buildDeliveryPack(db, { repo: slug, taskId })
     expect(pack).toBeTruthy()
     expect(pack.rounds).toBeGreaterThanOrEqual(1)
@@ -38,7 +38,7 @@ describe('buildDeliveryPack', () => {
     expect(pack.commitMessage).toContain('门店页新增优惠券领取入口')
     expect(pack.text).toContain('════ 任务交付包 ════')
     expect(pack.text).toContain('── ① 建议 commit message ──')
-    expect(pack.text).toContain('── ② MR 描述（直接贴进 GitLab）──')
+    expect(pack.text).toContain('── ② 变更说明 ──')
     expect(pack.text).toContain('── ③ 收尾清单（在你自己的机器上做）──')
     expect(pack.text).toContain('以你本地工作区实际改动为准') // 平台不留码：一切以本地为准
     expect(pack.text).toContain('禁止 commit/push"约束至此解除')

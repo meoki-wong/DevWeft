@@ -3,11 +3,11 @@
 --   awp_tenant : MCP 与租户 REST —— 策略：行的 tenant_id = current_setting('app.tenant_id', true)
 --                 或 = slug 'shared' 的 repo_id（§14.1）
 --   awp_worker : acquireLease 与 host-worker —— 不启用租户策略；只授予租约/run 需要的表
---   awp_admin  : GET /api/testing/projects 与迁移 —— BYPASSRLS（工具调用不得使用）
--- 连接约定：池默认用户 = 表 owner（天然绕过 RLS，即 admin 路径）；
+-- 连接约定：AWP_PG_URL 使用数据库 owner，负责迁移和管理查询；
 --          租户请求在事务内 SET LOCAL app.tenant_id + SET LOCAL ROLE awp_tenant；
 --          工人事务内 SET LOCAL ROLE awp_worker。禁止会话级 SET（§14.1）。
 -- 幂等：可重复执行（角色/策略均做存在性判断）。
+-- awp_admin 不由该脚本创建：当前运行时代码不使用单独的 BYPASSRLS 角色。
 
 DO $$
 BEGIN
@@ -16,9 +16,6 @@ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'awp_worker') THEN
     CREATE ROLE awp_worker NOLOGIN;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'awp_admin') THEN
-    CREATE ROLE awp_admin NOLOGIN BYPASSRLS;
   END IF;
 END $$;
 

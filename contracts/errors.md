@@ -1,7 +1,7 @@
 # 测试平台错误码
 
 契约版本：`1.0.0`  
-来源：`docs/TEST-PLATFORM-ENTERPRISE.md` §17  
+来源：本文是错误码清单的唯一权威来源；OpenAPI 错误枚举必须与本文一致。
 HTTP 响应信封：`{ data, error, meta }`；成功时 `error` 必须为 `null`。
 
 `error` 对象：
@@ -17,6 +17,8 @@ HTTP 响应信封：`{ data, error, meta }`；成功时 `error` 必须为 `null`
 |---|---:|---|
 | `UNKNOWN_FIELD` | 400 | 客户端发送未定义字段，升级/修正客户端 |
 | `INVALID_SCHEMA` | 400 | 按 validationErrors 修正 |
+| `RUN_NOT_FOUND` | 404 | 检查 runId 是否属于当前项目并仍可读取 |
+| `BLOB_STORE_UNAVAILABLE` | 503 | 确认主机 blob 服务与共享存储恢复后重试提交；备用机没有本地缓存 |
 | `UNRESOLVED_REMOTE` | 403 | 管理员登记 provider project/remote |
 | `CROSS_REPO_REFERENCE` | 403 | 拒绝并审计租户对象拼接 |
 | `BRANCH_UNVERIFIED` | 409 | 刷新远程 ref；仅允许 task advisory，禁止正式门禁 |

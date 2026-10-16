@@ -94,14 +94,14 @@ describe('审核插槽（档位与链，纯函数）', () => {
 })
 
 describe('submitTestSpec 集成（record 档归因落库，真库 + 用后即清）', () => {
-  it('提交后 review_* 四列落库，行为与改动前一致（active）', async () => {
+  it('record 档位保留 active，但未启用契约审核时不虚报 approved', async () => {
     const spec = await submitTestSpec({
       repoId: REPO, featureKey: FK, author: 'ai-coding-agent', specType: 'e2e', side: 'web',
       content: GOOD_SPEC,
     })
     expect(spec.review_status).toBe('active')
     expect(spec.reviewed_by).toBe('auto:contract')
-    expect(spec.review_decision).toBe('approved')
+    expect(spec.review_decision).toBe('abstain')
   })
 
   it('transition 落审核人（human:tester）', async () => {

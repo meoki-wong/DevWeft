@@ -66,7 +66,6 @@ async function submitS(db, boot, { taskId = 'T-S-1' } = {}) {
       targetRemoteId: boot.remoteId,
       targetRef: 'refs/heads/stage',
       targetCommitOid: OID,
-      mr: null,
     },
     bundle: { sha256: sha, size: payload.length },
     suiteRequest: { mode: 'auto', candidateRevisionIds: [], candidateApprovalIds: [] },

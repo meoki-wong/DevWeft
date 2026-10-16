@@ -4,15 +4,29 @@
 param(
   [int]$Port = 8787,
   [int]$BrokerPort = 8788,
+  [int]$GatewayPort = 8787,
+  [int]$BlobPort = 8792,
   [string]$RunnerRoot,
   [string]$SwitchName = 'awp-isolated',
+  [string]$NetworkCidr = $env:AWP_VM_NETWORK_CIDR,
   [switch]$SkipHyperV,
   [switch]$SkipApiSmoke
 )
 
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-if (-not $RunnerRoot) { $RunnerRoot = Join-Path $Root 'data\runner' }
+. (Join-Path $PSScriptRoot 'Deploy.Common.ps1')
+. (Join-Path $PSScriptRoot 'windows\isolated-network.ps1')
+Import-DevWeftDeploymentEnv -Root $Root -Optional
+if (-not $PSBoundParameters.ContainsKey('GatewayPort') -and $env:AWP_GATEWAY_PORT) { $GatewayPort = [int]$env:AWP_GATEWAY_PORT }
+if (-not $PSBoundParameters.ContainsKey('BlobPort') -and $env:AWP_BLOB_PORT) { $BlobPort = [int]$env:AWP_BLOB_PORT }
+if (-not $PSBoundParameters.ContainsKey('Port') -and $env:AWP_CONTROL_PORT) { $Port = [int]$env:AWP_CONTROL_PORT }
+if (-not $PSBoundParameters.ContainsKey('BrokerPort') -and $env:AWP_BROKER_PORT) { $BrokerPort = [int]$env:AWP_BROKER_PORT }
+if (-not $RunnerRoot) { $RunnerRoot = if ($env:AWP_RUNNER_ROOT) { $env:AWP_RUNNER_ROOT } else { Join-Path $Root 'data\runner' } }
+if (-not $NetworkCidr) { $NetworkCidr = if ($env:AWP_VM_NETWORK_CIDR) { $env:AWP_VM_NETWORK_CIDR } else { '192.168.250.0/24' } }
+$network = Assert-PrivateIpv4Cidr $NetworkCidr
+$BlockPorts = @($GatewayPort, $BrokerPort, $Port, $BlobPort) | Sort-Object -Unique
+$hyperVEnabled = ($env:AWP_HYPERV_ENABLED -and $env:AWP_HYPERV_ENABLED.Trim().ToLowerInvariant() -eq 'true') -and (-not $SkipHyperV)
 $failed = New-Object System.Collections.Generic.List[string]
 $warned = New-Object System.Collections.Generic.List[string]
 
@@ -56,6 +70,23 @@ try {
   }
 } catch {
   Add-Fail "无法访问 http://127.0.0.1:$Port/api/health : $($_.Exception.Message)"
+}
+
+Write-Step '角色与制品存储就绪状态'
+try {
+  $ready = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/health/ready" -TimeoutSec 5
+  if (-not $ready.ready -or $ready.node.role -ne 'primary') {
+    Add-Fail ("控制面未以 primary 角色就绪；role={0}" -f $ready.node.role)
+  } elseif (-not $ready.blobStorage.ok) {
+    Add-Fail ("主机本地 blob 存储不可用；state={0}; recovery={1}" -f $ready.blobStorage.state, $ready.blobStorage.recovery)
+  } else {
+    Add-Ok ("role=primary execution={0} blob={1}" -f $ready.node.executionMode, $ready.blobStorage.state)
+  }
+  if ($env:AWP_DB_DIALECT -eq 'postgres' -and -not $ready.standbyUploadEndpoint.ok) {
+    Add-Warn ("主机控制面可用，但备用机上传端点未就绪；state={0}。备用机提交目前不可用。" -f $ready.standbyUploadEndpoint.state)
+  }
+} catch {
+  Add-Fail "无法访问角色/制品 readiness: $($_.Exception.Message)"
 }
 
 Write-Step 'secret broker 监听'
@@ -128,13 +159,19 @@ if (-not $SkipApiSmoke -and (Test-Path $tokenFile) -and (Test-Path $summaryFile)
   }
 }
 
-if (-not $SkipHyperV) {
+if ($hyperVEnabled) {
   Write-Step 'Hyper-V 工作目录'
   foreach ($p in @("$RunnerRoot\images", "$RunnerRoot\attempts", "$RunnerRoot\scratch", "$RunnerRoot\certs")) {
     if (Test-Path $p) { Add-Ok $p } else { Add-Warn "缺少 $p" }
   }
   $golden = Join-Path $RunnerRoot 'images\golden.vhdx'
-  if (Test-Path $golden) { Add-Ok "Golden $golden" } else { Add-Warn "尚无 Golden VHDX（放到 $golden 后可跑完整 VM PoC）" }
+  if (Test-Path $golden) {
+    $imageOutput = & node (Join-Path $Root 'scripts\verify-runner-image.mjs') '--vhdx' $golden 2>&1
+    if ($LASTEXITCODE -eq 0) { Add-Ok "signed Golden image $golden" }
+    else { Add-Fail ("runner image verification failed: " + (($imageOutput | Out-String).Trim())) }
+  } else {
+    Add-Fail "Hyper-V worker is enabled but Golden VHDX is missing: $golden. Publish a signed image first, then rerun deployment."
+  }
 
   try {
     Import-Module Hyper-V -ErrorAction Stop
@@ -143,12 +180,27 @@ if (-not $SkipHyperV) {
       Add-Warn "交换机 $SwitchName 不存在（管理员重新跑部署脚本可创建）"
     } elseif ($sw.Name -eq 'Default Switch') {
       Add-Fail '禁止使用 Default Switch'
+    } elseif ($sw.SwitchType -ne 'Internal') {
+      Add-Fail ("switch {0} has type {1}; an Internal switch is required and existing switches are not converted." -f $sw.Name, $sw.SwitchType)
     } else {
       Add-Ok ("switch {0} ({1})" -f $sw.Name, $sw.SwitchType)
     }
   } catch {
-    Add-Warn "无法查询 Hyper-V：$($_.Exception.Message)"
+    Add-Fail "无法查询 Hyper-V：$($_.Exception.Message)"
   }
+
+  try {
+    $networkArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'windows\ensure-isolated-network.ps1'),
+      '-SwitchName', $SwitchName, '-ProxyIp', $network.ProxyIp, '-GuestCidr', $NetworkCidr, '-PreflightOnly', '-BlockPorts')
+    $networkArgs += @($BlockPorts | ForEach-Object { "$_" })
+    $networkCheck = & powershell.exe @networkArgs 2>&1
+    if ($LASTEXITCODE -eq 0) { Add-Ok "isolated network preflight $NetworkCidr" }
+    else { Add-Fail ("isolated network preflight failed: " + (($networkCheck | Out-String).Trim())) }
+  } catch {
+    Add-Fail "isolated network preflight failed: $($_.Exception.Message)"
+  }
+} else {
+  Add-Ok 'Hyper-V worker disabled; control-plane-only deployment'
 }
 
 Write-Host ''
